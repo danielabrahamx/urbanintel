@@ -35,6 +35,18 @@ Polls traffic camera clips, runs them through vision models for incident detecti
                      +----------------------+
 ```
 
+### Upload flow (presigned URL — bypasses Vercel body limits)
+
+```
+Browser                          Vercel API routes         Supabase
+──────                          ──────────────────         ────────
+1. POST /api/upload-url ──────→ generates signed URL
+2. PUT video ────────────────────────────────────────────→ stored directly
+3. POST /api/upload ──────────→ signed download → Python analysis
+```
+
+The browser uploads video **directly to Supabase Storage** via a presigned URL. Vercel never touches the file bytes — only tiny JSON payloads (~200 bytes). This avoids the 4.5 MB Vercel body limit.
+
 ### Backend
 
 | File | Role |
@@ -46,6 +58,7 @@ Polls traffic camera clips, runs them through vision models for incident detecti
 | `shared/incident_repository.py` | Supabase persistence layer |
 | `shared/config_loader.py` | Typed config from env vars + config.py |
 | `config.py` | Tunables (camera ID, poll interval, thresholds, prompt template) |
+| `repro_upload.py` | End-to-end upload test with the presigned URL pipeline (16 MB dummy) |
 
 ### Frontend
 
@@ -54,9 +67,11 @@ Polls traffic camera clips, runs them through vision models for incident detecti
 | `frontend/app/(protected)/page.tsx` | Dashboard - map, live status button, manual upload, recent activity |
 | `frontend/app/(protected)/incidents/page.tsx` | Sortable/filterable incident table with CSV export |
 | `frontend/components/Map.tsx` | Leaflet map with severity pins and heatmap |
-| `frontend/app/api/analyze/route.ts` | Proxies TfL clip analysis to Python backend |
-| `frontend/app/api/upload/route.ts` | Receives multipart upload, stores to Supabase Storage, triggers analysis |
+| `frontend/app/api/analyze/route.ts` | Proxies video analysis to Python backend |
+| `frontend/app/api/upload-url/route.ts` | Generates presigned Supabase upload URL (server-side, service role) |
+| `frontend/app/api/upload/route.ts` | Post-upload handler — creates signed download URL, triggers analysis |
 | `frontend/app/api/incidents/route.ts` | Public read endpoint (service role) |
+| `frontend/app/api/incidents/[id]/route.ts` | Admin delete endpoint (auth required) |
 | `frontend/lib/supabase.ts` | Unified Supabase client factory (browser / server / middleware) |
 
 ---
@@ -193,9 +208,30 @@ The prompt adapts to the source:
 
 ---
 
+## Upload Architecture
+
+Manual video uploads use a **three-step presigned URL flow** to avoid Vercel's 4.5 MB serverless body limit:
+
+```
+1. Browser  →  POST /api/upload-url  {filename, contentType}
+             ←  {signedUrl, token, path}
+
+2. Browser  →  PUT signedUrl (Supabase Storage directly)
+             ←  200 OK
+
+3. Browser  →  POST /api/upload  {path, lat, lon, locationName}
+             ←  {success, incident_detected, severity, ...}
+```
+
+Step 2 uploads directly to Supabase — Vercel never touches the video bytes. Step 3 creates a signed download URL and forwards it to the Python backend for analysis. The whole flow works without authentication (public uploads).
+
+**Test it:** `python repro_upload.py` (defaults to 16 MB dummy file against localhost:3000).
+
+---
+
 ## Key Design Decisions
 
-1. **Public by default** - The map and incident feed are readable without auth. Only admin delete and realtime subscriptions require login.
+1. **Public by default** - The map and incident feed are readable without auth. Only admin delete and realtime subscriptions require login. Manual upload is open — anyone can submit footage.
 
 2. **Service role for reads** - The frontend API routes use `createServiceClient()` (service role key) for DB reads. This avoids depending on open RLS policies and keeps the public experience reliable.
 
@@ -204,6 +240,8 @@ The prompt adapts to the source:
 4. **Source-aware prompts** - `build_analysis_prompt(source)` returns different framing for TfL vs manual footage. This is the single seam for adjusting model behavior per input type.
 
 5. **No-op when unconfigured** - `IncidentRepository.from_env()` returns `None` if Supabase creds are missing. The watcher and API server continue to work without persistence.
+
+6. **Presigned URL uploads** - Video files go direct browser→Supabase. Vercel serverless functions only handle tiny JSON payloads. This sidesteps Vercel's body size limit permanently and scales to any file size.
 
 ---
 
@@ -217,11 +255,26 @@ The prompt adapts to the source:
 
 ### Frontend (Vercel)
 
-1. `cd frontend`
-2. Set env vars in Vercel dashboard
-3. `vercel --prod`
+**Important:** Set the Vercel project's **Root Directory** to `frontend`. The repo root has no Next.js app — the framework lives in the `frontend/` subdirectory.
 
-The frontend build is safe without Supabase credentials - it falls back to placeholders and fails at request time, not build time.
+1. Go to Vercel Dashboard → Project Settings → General → Root Directory → set to `frontend`
+2. Set env vars in Vercel dashboard (see list below)
+3. Deploy: `cd frontend && vercel --prod --yes`
+
+**Environment variables:**
+- `NEXT_PUBLIC_SUPABASE_URL` — Supabase project URL
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — Supabase anon key
+- `SUPABASE_SERVICE_ROLE_KEY` — Supabase service role (server-side only)
+- `NEXT_PUBLIC_TFL_APP_KEY` — TfL API key
+- `BACKEND_API_URL` or `NEXT_PUBLIC_API_URL` — Python backend URL
+- `OPENROUTER_API_KEY` / `GEMINI_API_KEY` — model API keys
+- `NEXT_PUBLIC_ADMIN_EMAILS` — comma-separated admin emails
+
+The frontend build is safe without Supabase credentials — it falls back to placeholders and fails at request time, not build time.
+
+### GitHub auto-deploy
+
+Set the Vercel project's Root Directory to `frontend` (see above). Without this, auto-deploy on push fails with "Couldn't find any `pages` or `app` directory."
 
 ---
 
@@ -232,6 +285,7 @@ urbanintel/
 ├── main.py                     # CLI watcher
 ├── api_server.py               # FastAPI backend
 ├── config.py                   # Tunables and constants
+├── repro_upload.py             # Upload pipeline E2E test
 ├── requirements.txt
 ├── .env.example
 │
@@ -249,7 +303,7 @@ urbanintel/
 │   ├── test_config.py
 │   └── test_api_server.py
 │
-└── frontend/                   # Next.js 14 app
+└── frontend/                   # Next.js 14 app (Vercel root directory)
     ├── app/
     │   ├── layout.tsx
     │   ├── (protected)/
@@ -259,13 +313,17 @@ urbanintel/
     │   └── api/
     │       ├── analyze/route.ts
     │       ├── upload/route.ts
-    │       └── incidents/route.ts
+    │       ├── upload-url/route.ts
+    │       └── incidents/
+    │           ├── route.ts
+    │           └── [id]/route.ts
     ├── components/
     │   ├── Map.tsx
     │   ├── SeverityBadge.tsx
     │   └── ...
     ├── lib/
     │   ├── supabase.ts
+    │   ├── supabase-server.ts
     │   └── types.ts
     └── supabase/migrations/
 ```
