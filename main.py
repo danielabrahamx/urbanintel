@@ -24,11 +24,11 @@ from config import (
 
 SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 SEVERITY_EMOJI = {
-    "none": "✅",
-    "low": "⚠️",
-    "medium": "🚨",
-    "high": "🔴",
-    "critical": "🆘",
+    "none": "[OK]",
+    "low": "[!]",
+    "medium": "[*]",
+    "high": "[**]",
+    "critical": "[!!!]",
 }
 
 TFL_API = "https://api.tfl.gov.uk/Place/Type/JamCam"
@@ -154,7 +154,7 @@ def analyse_video(video_path: str) -> dict:
 def print_result(result: dict, camera_name: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     severity = result.get("severity", "none")
-    emoji = SEVERITY_EMOJI.get(severity, "⚠️")
+    emoji = SEVERITY_EMOJI.get(severity, "[!]")
 
     if not result.get("incident_detected"):
         scene = result.get("scene_summary", "")
@@ -162,7 +162,7 @@ def print_result(result: dict, camera_name: str) -> None:
         return
 
     if SEVERITY_RANK.get(severity, 0) < SEVERITY_RANK.get(ALERT_THRESHOLD, 2):
-        print(f"[{ts}] 👁  {camera_name} — Activity below threshold ({severity})")
+        print(f"[{ts}] [watch] {camera_name} — Activity below threshold ({severity})")
         return
 
     print(f"\n{'=' * 65}")
@@ -197,7 +197,7 @@ def main() -> None:
 
     genai.configure(api_key=api_key)
 
-    print("🚦 Urban Intelligence Agent")
+    print("Urban Intelligence Agent")
     print(f"   Camera : {TARGET_CAMERA_ID}")
     print(f"   Model  : {VISION_MODEL}")
     print(f"   Poll   : every {POLL_INTERVAL_SECONDS}s")

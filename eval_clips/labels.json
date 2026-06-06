@@ -1,0 +1,19 @@
+{
+  "_readme": "Map each MP4 filename to a list of incident types present. Use [] for clean clips with no incident.",
+  "_valid_types": [
+    "NEAR_MISS",
+    "RED_LIGHT_VIOLATION",
+    "WRONG_WAY",
+    "DANGEROUS_OVERTAKE",
+    "PEDESTRIAN_IN_ROAD",
+    "VEHICLE_STOPPED_DANGEROUSLY",
+    "AGGRESSIVE_DRIVING",
+    "CYCLIST_RISK"
+  ],
+  "near_miss_001.mp4": ["NEAR_MISS"],
+  "near_miss_002.mp4": ["NEAR_MISS"],
+  "overtake_001.mp4": ["DANGEROUS_OVERTAKE"],
+  "overtake_002.mp4": ["DANGEROUS_OVERTAKE"],
+  "clean_001.mp4": [],
+  "clean_002.mp4": []
+}

@@ -1,0 +1,31 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Temp / working files
+analysis_frames/
+eval_results.json
+*.mp4
+*.jpg
+*.jpeg
+
+# Node (for future frontend)
+node_modules/
+.next/
+.vercel/
+
+# OS
+.DS_Store
+Thumbs.db
