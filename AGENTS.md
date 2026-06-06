@@ -4,6 +4,20 @@ How to work with this codebase. Read this before touching anything.
 
 ---
 
+## Quick start (do this first)
+
+When you open this codebase for the first time:
+
+1. Read `.env.example` to see what env vars exist
+2. Skim `config.py` to understand the tunable surface
+3. Look at the file map at the bottom of this doc to orient yourself
+4. Run `python -m pytest tests/ -v` to make sure the test suite passes
+5. Run `cd frontend && npm run build` to make sure the frontend compiles
+
+Do NOT start editing code until you have run the tests and the build.
+
+---
+
 ## What this project is
 
 Urban Intelligence watches TfL traffic cameras with AI vision models to detect road safety incidents. It has three parts:
@@ -267,6 +281,47 @@ class TestMyAnalyzer:
 | `ADMIN_EMAILS` | No (optional) | Frontend admin delete |
 | `NEXT_PUBLIC_TFL_APP_KEY` | No (optional) | Frontend TfL API calls from browser |
 | `BACKEND_API_URL` / `NEXT_PUBLIC_API_URL` | No (optional) | Frontend proxy to Python backend |
+
+---
+
+## Anti-patterns (things that have caused bugs)
+
+**Do NOT require auth on public-facing routes.** The map, incident feed, live status button, and manual upload must all work for anonymous users. Auth is only for admin delete and Supabase realtime subscriptions. If you add a `if (!user) return 401` guard to `/api/analyze`, `/api/upload`, or `/api/incidents`, you break the public experience.
+
+**Do NOT expose the service role key to the browser.** `SUPABASE_SERVICE_ROLE_KEY` must only be used in server-side API routes (`route.ts`), never in client components or `NEXT_PUBLIC_*` env vars.
+
+**Do NOT call `download_video()` without cleanup.** It creates a temp file. Every caller must delete it in `finally`.
+
+**Do NOT cache TfL video URLs.** TfL rotates them. Call `get_camera_video_url()` every time you need a URL.
+
+**Do NOT hardcode camera IDs or thresholds outside `config.py`.** All tunables live there. If you embed `"JamCams_00001.07350"` or `"medium"` in logic code, you create a maintenance trap.
+
+**Do NOT return 500 from the frontend proxy.** If the Python backend returns an error, the frontend proxy (`route.ts`) should still return a structured JSON response the UI can display. Never let raw FastAPI stack traces leak to the browser.
+
+**Do NOT forget to update both Python and TypeScript types.** `source` is `'tfl' | 'manual' | 'upload'` in both `api_server.py` validation AND `frontend/lib/types.ts`. Keep them in sync.
+
+---
+
+## Pre-commit checklist
+
+Before you commit or push, run ALL of these. Do not skip any.
+
+```bash
+# 1. Backend tests (must be 100% pass)
+.venv/Scripts/python -m pytest tests/ -v
+
+# 2. Frontend build (must compile with zero errors)
+cd frontend && npm run build
+
+# 3. Check for secrets in the diff
+cd .. && git diff --cached | findstr -i "api_key service_role password secret token"
+# On macOS/Linux: git diff --cached | grep -i -E "api_key|service_role|password|secret|token"
+
+# 4. Verify no temp files were staged
+git diff --cached --name-only | findstr -i "debug_ deploy test_upload .env.vercel"
+```
+
+If any step fails, fix it before committing.
 
 ---
 
