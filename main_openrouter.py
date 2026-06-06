@@ -1,4 +1,4 @@
-"""Urban Intelligence Agent using OpenRouter (qwen/qwen3.7-plus)."""
+"""Urban Intelligence Agent using OpenRouter (minimax/minimax-m3 with full video input)."""
 import base64
 import json
 import os
@@ -73,11 +73,14 @@ SEVERITY_EMOJI = {
 
 TFL_API = "https://api.tfl.gov.uk/Place/Type/JamCam"
 OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
-VISION_MODEL = "qwen/qwen3.7-plus"
+VISION_MODEL = "minimax/minimax-m3"
 
-ANALYSIS_PROMPT = """You are an automated road safety system watching a traffic camera image from a London road junction.
+ANALYSIS_PROMPT = """You are an automated road safety system watching a 10-second clip
+from a fixed TfL traffic camera at a London road junction.
 
-Your job: detect dangerous driving behaviour and near-miss incidents from vehicle and pedestrian positions. Resolution is low - you cannot identify faces, individuals, or number plates.
+Your job: detect dangerous driving behaviour and near-miss incidents from vehicle and
+pedestrian movement patterns across the full clip. Resolution is low - you cannot and
+must not attempt to identify faces, individuals, or number plates.
 
 Dangerous events to flag:
 - NEAR_MISS: vehicle comes dangerously close to a pedestrian or another vehicle
@@ -89,7 +92,8 @@ Dangerous events to flag:
 - AGGRESSIVE_DRIVING: sudden swerving or obvious tailgating
 - CYCLIST_RISK: cyclist in dangerous proximity to a larger vehicle
 
-Only flag what you can clearly observe. If in doubt, return incident_detected: false. A false negative is better than a false positive.
+Only flag what you can clearly observe across the video. If in doubt, return incident_detected: false.
+A false negative is better than a false positive.
 
 Respond ONLY with this JSON - no preamble, no markdown, no explanation outside it:
 {
@@ -100,7 +104,8 @@ Respond ONLY with this JSON - no preamble, no markdown, no explanation outside i
       "type": "<one of the event types above>",
       "severity": "low" | "medium" | "high" | "critical",
       "description": "<1-2 sentences describing exactly what you see>",
-      "confidence": "low" | "medium" | "high"
+      "confidence": "low" | "medium" | "high",
+      "timestamp_in_clip": "<approximate time in clip e.g. '0:04'>"
     }
   ],
   "scene_summary": "<one sentence describing overall traffic conditions>",
@@ -108,8 +113,10 @@ Respond ONLY with this JSON - no preamble, no markdown, no explanation outside i
 }"""
 
 
-def get_camera_image_url(camera_id: str) -> tuple[str, str, float | None, float | None]:
-    """Fetch camera and return (image_url, camera_name, lat, lon)."""
+def get_camera_video_url(camera_id: str) -> tuple[str, str, float | None, float | None]:
+    """Fetch camera list from TfL and return (video_url, camera_name, lat, lon).
+    Re-fetches every poll because TfL can rotate JamCam URLs.
+    """
     params = {}
     if TFL_APP_ID:
         params["app_id"] = TFL_APP_ID
@@ -126,31 +133,27 @@ def get_camera_image_url(camera_id: str) -> tuple[str, str, float | None, float 
 
         name = cam.get("commonName", camera_id)
         for prop in cam.get("additionalProperties", []):
-            if prop.get("key") == "imageUrl":
+            if prop.get("key") == "videoUrl":
                 return prop["value"], name, cam.get("lat"), cam.get("lon")
 
-    raise ValueError(f"Camera {camera_id} not found or has no imageUrl")
+    raise ValueError(f"Camera {camera_id} not found or has no videoUrl")
 
 
-def download_image(image_url: str) -> str:
-    """Download JPG to temp file, return path."""
-    resp = requests.get(image_url, timeout=30)
+def download_video(video_url: str) -> str:
+    """Download MP4 to temp file, return path."""
+    resp = requests.get(video_url, timeout=30)
     resp.raise_for_status()
-    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp.write(resp.content)
     tmp.close()
     return tmp.name
 
 
-def encode_image(image_path: str) -> str:
-    """Encode image to base64 for API."""
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
-
-def analyze_image(image_path: str, api_key: str) -> dict:
-    """Send image to OpenRouter and return parsed analysis."""
-    base64_image = encode_image(image_path)
+def analyze_video(video_path: str, api_key: str) -> dict:
+    """Base64-encode the MP4 and send to minimax/minimax-m3 via OpenRouter."""
+    with open(video_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    data_url = f"data:video/mp4;base64,{b64}"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -165,10 +168,8 @@ def analyze_image(image_path: str, api_key: str) -> dict:
                 "content": [
                     {"type": "text", "text": ANALYSIS_PROMPT},
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}"
-                        },
+                        "type": "video_url",
+                        "video_url": {"url": data_url},
                     },
                 ],
             }
@@ -177,7 +178,7 @@ def analyze_image(image_path: str, api_key: str) -> dict:
     }
 
     print("  Sending to OpenRouter...", end=" ", flush=True)
-    resp = requests.post(OPENROUTER_API, headers=headers, json=payload, timeout=60)
+    resp = requests.post(OPENROUTER_API, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     print("done")
 
@@ -244,18 +245,18 @@ def main() -> None:
         poll += 1
         print(f"[Poll #{poll}]")
 
-        image_path = None
+        video_path = None
         try:
-            print("  Fetching image URL from TfL...", end=" ", flush=True)
-            image_url, camera_name, lat, lon = get_camera_image_url(TARGET_CAMERA_ID)
+            print("  Fetching video URL from TfL...", end=" ", flush=True)
+            video_url, camera_name, lat, lon = get_camera_video_url(TARGET_CAMERA_ID)
             print(f"done ({camera_name})")
 
-            print("  Downloading image...", end=" ", flush=True)
-            image_path = download_image(image_url)
-            size_kb = os.path.getsize(image_path) // 1024
+            print("  Downloading video...", end=" ", flush=True)
+            video_path = download_video(video_url)
+            size_kb = os.path.getsize(video_path) // 1024
             print(f"done ({size_kb}KB)")
 
-            result = analyze_image(image_path, api_key)
+            result = analyze_video(video_path, api_key)
             print_result(result, camera_name)
             write_incident(supabase_client, result, TARGET_CAMERA_ID, camera_name, lat, lon)
 
@@ -263,8 +264,8 @@ def main() -> None:
             print(f"  ERROR: {exc}")
 
         finally:
-            if image_path and os.path.exists(image_path):
-                os.unlink(image_path)
+            if video_path and os.path.exists(video_path):
+                os.unlink(video_path)
 
         print(f"  Sleeping {POLL_INTERVAL_SECONDS}s...\n")
         time.sleep(POLL_INTERVAL_SECONDS)
