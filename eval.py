@@ -34,8 +34,7 @@ with warnings.catch_warnings():
 
 from dotenv import load_dotenv
 
-from config import VISION_MODEL
-from main import ANALYSIS_PROMPT
+from config import VISION_MODEL, ANALYSIS_PROMPT, get_config
 
 VALID_TYPES = {
     "NEAR_MISS",
@@ -199,7 +198,8 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv()
-    api_key = os.environ.get("GEMINI_API_KEY")
+    cfg = get_config()
+    api_key = cfg.gemini_api_key
     if not api_key:
         print("ERROR: Set GEMINI_API_KEY in .env")
         sys.exit(1)
@@ -230,32 +230,20 @@ def main() -> None:
             continue
 
         try:
-            print("  Uploading...", end=" ", flush=True)
-            prediction = analyse_video(clip_path)
-            print("done")
-            result = score_clip(gt_types, prediction)
-            clip_results[clip_name] = result
-            binary = ("TP" if result["binary_tp"] else
-                      "FP" if result["binary_fp"] else
-                      "FN" if result["binary_fn"] else "TN")
-            print(f"  Predicted: {result['pred_types'] or ['clean']}  [{binary}]")
-            print(f"  Summary  : {result['scene_summary']}")
+            result = analyse_video(str(clip_path))
+            score = score_clip(gt_types, result)
+            clip_results[clip_name] = score
+            status = "PASS" if score["binary_tp"] or score["binary_tn"] else "FAIL"
+            print(f"  Result : incident={result.get('incident_detected')} severity={result.get('severity')} -> {status}")
         except Exception as exc:
             print(f"  ERROR: {exc}")
             clip_results[clip_name] = {"error": str(exc)}
 
-        print()
-
     print_summary(clip_results, labels)
 
-    out = {
-        "run_at": datetime.now().isoformat(),
-        "model": VISION_MODEL,
-        "clips": clip_results,
-    }
     with open(args.out, "w") as f:
-        json.dump(out, f, indent=2)
-    print(f"\nFull results saved to: {args.out}")
+        json.dump(clip_results, f, indent=2)
+    print(f"Saved results to {args.out}")
 
 
 if __name__ == "__main__":

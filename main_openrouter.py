@@ -1,189 +1,66 @@
-"""Urban Intelligence Agent using OpenRouter (minimax/minimax-m3 with full video input)."""
-import base64
-import json
+"""Urban Intelligence Agent - OpenRouter backend (minimax/minimax-m3 with full video input)."""
+
 import os
 import sys
-import tempfile
 import time
 from datetime import datetime
 
-import requests
 from dotenv import load_dotenv
 
 from config import (
     ALERT_THRESHOLD,
     POLL_INTERVAL_SECONDS,
     TARGET_CAMERA_ID,
-    TFL_APP_KEY,
 )
 
-from supabase import create_client as _create_supabase_client
+from shared.config_loader import load_config
+from shared.tfl_client import TflClient, TFL_API  # noqa: F401 - TFL_API kept for api_server compat
+from shared.video_analyzer import (
+    OpenRouterAnalyzer,
+    download_video,
+    SEVERITY_RANK,
+    SEVERITY_EMOJI,
+)
+from shared.incident_repository import IncidentRepository
 
+# ---------------------------------------------------------------------------
+# Module-level constants still referenced by api_server.py imports
+# ---------------------------------------------------------------------------
 
-def _init_supabase():
-    """Initialize Supabase client if credentials are available."""
-    url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if url and key:
-        try:
-            return _create_supabase_client(url, key)
-        except Exception as exc:
-            print(f"[warn] Supabase init failed: {exc}")
-    return None
-
-
-def write_incident(
-    supabase_client,
-    result: dict,
-    camera_id: str,
-    camera_name: str,
-    lat: float | None,
-    lon: float | None,
-) -> None:
-    """Write analysis result to Supabase incidents table. No-op if client is None."""
-    if supabase_client is None:
-        return
-    try:
-        supabase_client.table("incidents").insert({
-            "camera_id": camera_id,
-            "camera_name": camera_name,
-            "lat": lat,
-            "lon": lon,
-            "incident_detected": result.get("incident_detected", False),
-            "severity": result.get("severity", "none"),
-            "incidents": result.get("incidents", []),
-            "scene_summary": result.get("scene_summary", ""),
-            "reasoning": result.get("reasoning", ""),
-            "raw_response": result,
-        }).execute()
-    except Exception as exc:
-        print(f"  [warn] Supabase write failed: {exc}")
-
-
-SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
-SEVERITY_EMOJI = {
-    "none": "[OK]",
-    "low": "[!]",
-    "medium": "[*]",
-    "high": "[**]",
-    "critical": "[!!!]",
-}
-
-TFL_API = "https://api.tfl.gov.uk/Place/Type/JamCam"
-OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
+#: The OpenRouter model in use - kept here so api_server health check can report it.
 VISION_MODEL = "minimax/minimax-m3"
 
-ANALYSIS_PROMPT = """You are an automated road safety system watching a 10-second clip
-from a fixed TfL traffic camera at a London road junction.
-
-Your job: detect dangerous driving behaviour and near-miss incidents from vehicle and
-pedestrian movement patterns across the full clip. Resolution is low - you cannot and
-must not attempt to identify faces, individuals, or number plates.
-
-Dangerous events to flag:
-- NEAR_MISS: vehicle comes dangerously close to a pedestrian or another vehicle
-- RED_LIGHT_VIOLATION: vehicle clearly runs a red light
-- WRONG_WAY: vehicle moving against traffic flow
-- DANGEROUS_OVERTAKE: unsafe overtaking manoeuvre
-- PEDESTRIAN_IN_ROAD: person in the carriageway in danger
-- VEHICLE_STOPPED_DANGEROUSLY: vehicle stopped in a live lane, junction box, or crossroads
-- AGGRESSIVE_DRIVING: sudden swerving or obvious tailgating
-- CYCLIST_RISK: cyclist in dangerous proximity to a larger vehicle
-
-Only flag what you can clearly observe across the video. If in doubt, return incident_detected: false.
-A false negative is better than a false positive.
-
-Respond ONLY with this JSON - no preamble, no markdown, no explanation outside it:
-{
-  "incident_detected": true | false,
-  "severity": "none" | "low" | "medium" | "high" | "critical",
-  "incidents": [
-    {
-      "type": "<one of the event types above>",
-      "severity": "low" | "medium" | "high" | "critical",
-      "description": "<1-2 sentences describing exactly what you see>",
-      "confidence": "low" | "medium" | "high",
-      "timestamp_in_clip": "<approximate time in clip e.g. '0:04'>"
-    }
-  ],
-  "scene_summary": "<one sentence describing overall traffic conditions>",
-  "reasoning": "<one sentence explaining why you did or did not flag an incident>"
-}"""
+#: Convenience re-export so callers that do `from main_openrouter import TFL_APP_KEY`
+#: continue to work without changes.
+TFL_APP_KEY = os.environ.get("TFL_APP_KEY", "")
 
 
-def get_camera_video_url(camera_id: str) -> tuple[str, str, float | None, float | None]:
-    """Fetch camera list from TfL and return (video_url, camera_name, lat, lon).
-    Re-fetches every poll because TfL rotates JamCam URLs.
-    """
-    params = {}
-    if TFL_APP_KEY:
-        params["app_key"] = TFL_APP_KEY
-
-    resp = requests.get(TFL_API, params=params, timeout=15)
-    resp.raise_for_status()
-    cameras = resp.json()
-
-    for cam in cameras:
-        if cam.get("id") != camera_id:
-            continue
-
-        name = cam.get("commonName", camera_id)
-        for prop in cam.get("additionalProperties", []):
-            if prop.get("key") == "videoUrl":
-                return prop["value"], name, cam.get("lat"), cam.get("lon")
-
-    raise ValueError(f"Camera {camera_id} not found or has no videoUrl")
-
-
-def download_video(video_url: str) -> str:
-    """Download MP4 to temp file, return path."""
-    resp = requests.get(video_url, timeout=30)
-    resp.raise_for_status()
-    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-    tmp.write(resp.content)
-    tmp.close()
-    return tmp.name
-
+# ---------------------------------------------------------------------------
+# Backward-compat shim: api_server.py calls analyze_video(path, api_key)
+# ---------------------------------------------------------------------------
 
 def analyze_video(video_path: str, api_key: str) -> dict:
-    """Base64-encode the MP4 and send to minimax/minimax-m3 via OpenRouter."""
-    with open(video_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-    data_url = f"data:video/mp4;base64,{b64}"
+    """Thin wrapper kept for api_server.py backward compatibility.
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    New code should instantiate OpenRouterAnalyzer directly.
+    """
+    analyzer = OpenRouterAnalyzer(api_key=api_key, model=VISION_MODEL)
+    return analyzer.analyze(video_path)
 
-    payload = {
-        "model": VISION_MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": ANALYSIS_PROMPT},
-                    {
-                        "type": "video_url",
-                        "video_url": {"url": data_url},
-                    },
-                ],
-            }
-        ],
-        "response_format": {"type": "json_object"},
-    }
 
-    print("  Sending to OpenRouter...", end=" ", flush=True)
-    resp = requests.post(OPENROUTER_API, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
-    print("done")
+# Backward-compat shim: api_server.py also imports get_camera_video_url
+def get_camera_video_url(camera_id: str):
+    """Thin wrapper kept for api_server.py backward compatibility."""
+    tfl = TflClient(app_key=TFL_APP_KEY)
+    return tfl.get_camera_video_url(camera_id)
 
-    result = resp.json()
-    content = result["choices"][0]["message"]["content"]
-    return json.loads(content)
 
+# ---------------------------------------------------------------------------
+# Display helper
+# ---------------------------------------------------------------------------
 
 def print_result(result: dict, camera_name: str) -> None:
+    """Print a formatted summary of an analysis result to stdout."""
     ts = datetime.now().strftime("%H:%M:%S")
     severity = result.get("severity", "none")
     emoji = SEVERITY_EMOJI.get(severity, "[!]")
@@ -203,9 +80,16 @@ def print_result(result: dict, camera_name: str) -> None:
     print(f"  Scene    : {result.get('scene_summary', '')}")
     print(f"  Reasoning: {result.get('reasoning', '')}")
     for inc in result.get("incidents", []):
-        print(f"  -> [{inc.get('type', 'UNKNOWN')}] {inc.get('description', '')} (confidence: {inc.get('confidence', '?')})")
+        print(
+            f"  -> [{inc.get('type', 'UNKNOWN')}] {inc.get('description', '')} "
+            f"(confidence: {inc.get('confidence', '?')})"
+        )
     print(f"{'=' * 65}\n")
 
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     load_dotenv()
@@ -214,20 +98,20 @@ def main() -> None:
         print("ERROR: Set TARGET_CAMERA_ID in config.py before running.")
         sys.exit(1)
 
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        print("ERROR: Set OPENROUTER_API_KEY in .env")
-        print("Get a key at: https://openrouter.ai/keys")
-        sys.exit(1)
+    cfg = load_config(require_openrouter=True)
+    api_key = cfg.require_openrouter_key()
 
-    if not TFL_APP_KEY:
-        print("[warn] TFL_APP_KEY not set - using anonymous TfL access (low rate limit)")
+    analyzer = OpenRouterAnalyzer(api_key=api_key, model=VISION_MODEL)
+    tfl = TflClient(app_key=cfg.tfl_app_key)
 
-    supabase_client = _init_supabase()
-    if supabase_client:
+    repo = IncidentRepository.from_env()
+    if repo and repo.is_connected:
         print("   DB     : Supabase connected")
     else:
-        print("   DB     : not configured (set NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in .env)")
+        print(
+            "   DB     : not configured "
+            "(set NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in .env)"
+        )
 
     print("Urban Intelligence - OpenRouter watcher")
     print(f"   Camera : {TARGET_CAMERA_ID}")
@@ -237,6 +121,10 @@ def main() -> None:
     print(f"   Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     poll = 0
+    camera_name_cache: str | None = None
+    lat_cache: float | None = None
+    lon_cache: float | None = None
+
     while True:
         poll += 1
         print(f"[Poll #{poll}]")
@@ -244,20 +132,61 @@ def main() -> None:
         video_path = None
         try:
             print("  Fetching video URL from TfL...", end=" ", flush=True)
-            video_url, camera_name, lat, lon = get_camera_video_url(TARGET_CAMERA_ID)
+            video_url, camera_name, lat, lon = tfl.get_camera_video_url(TARGET_CAMERA_ID)
+            camera_name_cache, lat_cache, lon_cache = camera_name, lat, lon
             print(f"done ({camera_name})")
+
+            if repo:
+                try:
+                    repo.update_camera_status(
+                        camera_id=TARGET_CAMERA_ID,
+                        status="measuring",
+                        camera_name=camera_name,
+                        lat=lat,
+                        lon=lon,
+                        video_url=video_url,
+                    )
+                except Exception as db_exc:
+                    print(f"  [warn] Camera status update failed: {db_exc}")
 
             print("  Downloading video...", end=" ", flush=True)
             video_path = download_video(video_url)
             size_kb = os.path.getsize(video_path) // 1024
             print(f"done ({size_kb} KB)")
 
-            result = analyze_video(video_path, api_key)
+            result = analyzer.analyze(video_path)
             print_result(result, camera_name)
-            write_incident(supabase_client, result, TARGET_CAMERA_ID, camera_name, lat, lon)
+
+            if repo:
+                try:
+                    repo.save(
+                        result, TARGET_CAMERA_ID, camera_name, lat, lon, source="openrouter"
+                    )
+                    repo.update_camera_status(
+                        camera_id=TARGET_CAMERA_ID,
+                        status="idle",
+                        camera_name=camera_name,
+                        lat=lat,
+                        lon=lon,
+                        video_url=video_url,
+                    )
+                except Exception as db_exc:
+                    print(f"  [warn] DB operation failed: {db_exc}")
 
         except Exception as exc:
             print(f"  ERROR: {exc}")
+            if repo and camera_name_cache:
+                try:
+                    repo.update_camera_status(
+                        camera_id=TARGET_CAMERA_ID,
+                        status="error",
+                        camera_name=camera_name_cache,
+                        lat=lat_cache,
+                        lon=lon_cache,
+                        error_message=str(exc)[:200],
+                    )
+                except Exception as db_exc:
+                    print(f"  [warn] Error status update failed: {db_exc}")
 
         finally:
             if video_path and os.path.exists(video_path):

@@ -5,19 +5,23 @@ Run once to find central London TfL JamCams with a downloadable videoUrl.
 import requests
 from dotenv import load_dotenv
 
-from config import TFL_APP_KEY
+load_dotenv()
 
-TFL_API = "https://api.tfl.gov.uk/Place/Type/JamCam"
+from config import TFL_APP_KEY, get_config  # noqa: E402
+
+# Use centralized config for API URL
+_cfg = get_config()
+TFL_API = _cfg.tfl_api_url
 
 
 def main() -> None:
-    load_dotenv()
+    cfg = get_config()
 
     params = {}
-    if TFL_APP_KEY:
-        params["app_key"] = TFL_APP_KEY
+    if cfg.tfl_app_key:
+        params["app_key"] = cfg.tfl_app_key
 
-    resp = requests.get(TFL_API, params=params, timeout=15)
+    resp = requests.get(cfg.tfl_api_url, params=params, timeout=15)
     resp.raise_for_status()
     cameras = resp.json()
 

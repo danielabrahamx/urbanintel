@@ -8,20 +8,23 @@ from datetime import datetime
 import requests
 from dotenv import load_dotenv
 
-from config import POLL_INTERVAL_SECONDS, TARGET_CAMERA_ID, TFL_APP_ID, TFL_APP_KEY
+from config import POLL_INTERVAL_SECONDS, TARGET_CAMERA_ID, TFL_APP_ID, TFL_APP_KEY, get_config
 
-TFL_API = "https://api.tfl.gov.uk/Place/Type/JamCam"
+# Use centralized config for API URL
+_cfg = get_config()
+TFL_API = _cfg.tfl_api_url
 
 
 def get_camera_urls(camera_id: str) -> tuple[str, str, str]:
     """Fetch camera and return (image_url, video_url, camera_name)."""
+    cfg = get_config()
     params = {}
-    if TFL_APP_ID:
-        params["app_id"] = TFL_APP_ID
-    if TFL_APP_KEY:
-        params["app_key"] = TFL_APP_KEY
+    if cfg.tfl_app_id:
+        params["app_id"] = cfg.tfl_app_id
+    if cfg.tfl_app_key:
+        params["app_key"] = cfg.tfl_app_key
 
-    resp = requests.get(TFL_API, params=params, timeout=15)
+    resp = requests.get(cfg.tfl_api_url, params=params, timeout=15)
     resp.raise_for_status()
     cameras = resp.json()
 
@@ -56,14 +59,16 @@ def download_image(image_url: str) -> str:
 
 def main() -> None:
     load_dotenv()
+    # Reload config after dotenv loads
+    cfg = get_config()
 
-    if not TARGET_CAMERA_ID:
-        print("ERROR: Set TARGET_CAMERA_ID in config.py")
+    if not cfg.target_camera_id:
+        print("ERROR: Set TARGET_CAMERA_ID in config")
         sys.exit(1)
 
     print("Urban Intelligence Agent (Devin Vision Mode)")
-    print(f"   Camera: {TARGET_CAMERA_ID}")
-    print(f"   Poll: every {POLL_INTERVAL_SECONDS}s")
+    print(f"   Camera: {cfg.target_camera_id}")
+    print(f"   Poll: every {cfg.poll_interval_seconds}s")
     print(f"   Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     poll = 0
@@ -74,7 +79,7 @@ def main() -> None:
         image_path = None
         try:
             print("  Fetching camera URLs...", end=" ", flush=True)
-            image_url, video_url, camera_name = get_camera_urls(TARGET_CAMERA_ID)
+            image_url, video_url, camera_name = get_camera_urls(cfg.target_camera_id)
             print(f"done ({camera_name})")
 
             if not image_url:
@@ -109,8 +114,8 @@ def main() -> None:
             if image_path and os.path.exists(image_path):
                 os.unlink(image_path)
 
-        print(f"  Sleeping {POLL_INTERVAL_SECONDS}s...\n")
-        time.sleep(POLL_INTERVAL_SECONDS)
+        print(f"  Sleeping {cfg.poll_interval_seconds}s...\n")
+        time.sleep(cfg.poll_interval_seconds)
 
 
 if __name__ == "__main__":
