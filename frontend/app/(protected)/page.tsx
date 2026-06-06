@@ -196,37 +196,46 @@ export default function DashboardPage() {
 
         {/* Main Actions */}
         <div style={{ padding: '20px', borderBottom: '1px solid #2a2d3a' }}>
-          <h3 style={{ color: '#f0f2f8', fontSize: 13, fontWeight: 600, margin: '0 0 12px 0', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Analyze Traffic</h3>
+          <h3 style={{ color: '#f0f2f8', fontSize: 13, fontWeight: 600, margin: '0 0 12px 0', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Live Camera Analysis</h3>
 
-          {/* Analyze TfL Button */}
+          {/* Camera card */}
+          <div style={{ background: '#0f1117', border: '1px solid #2a2d3a', borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#f0f2f8' }}>{DEMO_CAMERA.name}</span>
+              <span style={{ fontSize: 10, padding: '2px 6px', background: '#10b98120', border: '1px solid #10b98140', borderRadius: 4, color: '#10b981' }}>LIVE</span>
+            </div>
+            <div style={{ fontSize: 10, color: '#6b7280', fontFamily: 'monospace', marginBottom: 6 }}>{DEMO_CAMERA.id}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: '#4b5563' }}>
+              <MapPin size={10} />
+              {DEMO_CAMERA.lat.toFixed(4)}, {DEMO_CAMERA.lon.toFixed(4)}
+            </div>
+          </div>
+
+          {/* Analyze button */}
           <button
             onClick={handleAnalyze}
             disabled={analyzing}
             style={{
               width: '100%',
-              padding: '14px 16px',
+              padding: '12px 16px',
               background: analyzing ? '#1e40af' : '#3b82f6',
               border: 'none',
               borderRadius: 8,
               color: '#fff',
-              fontSize: 14,
+              fontSize: 13,
               fontWeight: 600,
               cursor: analyzing ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 10,
+              gap: 8,
               opacity: analyzing ? 0.8 : 1,
               transition: 'all 0.15s',
             }}
           >
-            {analyzing ? <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={18} />}
-            {analyzing ? 'Analyzing...' : 'Analyze TfL Clip'}
+            {analyzing ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={16} />}
+            {analyzing ? 'Fetching & analyzing clip...' : 'Analyze Latest Clip'}
           </button>
-
-          <p style={{ color: '#6b7280', fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>
-            Fetches and analyzes a 10-second clip from {DEMO_CAMERA.name}
-          </p>
 
           {/* Analysis Result */}
           {lastAnalysis && (

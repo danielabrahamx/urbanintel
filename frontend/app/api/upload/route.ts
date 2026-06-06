@@ -1,61 +1,76 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase-server'
 
+// Raise body size limit for this route to handle 50MB video uploads
+export const maxDuration = 60 // seconds
+export const dynamic = 'force-dynamic'
+
 /**
  * POST /api/upload
  *
- * Handles video upload to storage, then delegates analysis to Python backend.
- * The backend's IncidentRepository handles all database persistence,
- * eliminating duplicate write logic between frontend and backend.
+ * 1. Receives multipart form (video file + lat/lon/locationName)
+ * 2. Uploads file to Supabase Storage (private bucket)
+ * 3. Creates a signed URL valid for 1 hour
+ * 4. Sends signed URL to Python backend for download + analysis
+ * 5. Returns analysis result
  */
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient()
 
-    // Verify user is authenticated
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const formData = await request.formData()
-    const video = formData.get('video') as File
+    const video = formData.get('video') as File | null
     const lat = parseFloat(formData.get('lat') as string)
     const lon = parseFloat(formData.get('lon') as string)
-    const locationName = formData.get('locationName') as string
+    const locationName = (formData.get('locationName') as string) || 'Manual Upload'
 
-    if (!video || isNaN(lat) || isNaN(lon)) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    if (!video) {
+      return NextResponse.json({ error: 'No video file provided' }, { status: 400 })
+    }
+    if (isNaN(lat) || isNaN(lon)) {
+      return NextResponse.json({ error: 'lat and lon are required' }, { status: 400 })
     }
 
-    // Upload video to Supabase Storage
-    const fileExt = video.name.split('.').pop()
-    const fileName = `${user.id}/${Date.now()}.${fileExt}`
+    const MAX_MB = 50
+    if (video.size > MAX_MB * 1024 * 1024) {
+      return NextResponse.json({ error: `File too large (max ${MAX_MB}MB)` }, { status: 413 })
+    }
 
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    // Upload to private Supabase Storage bucket
+    const ext = video.name.split('.').pop() ?? 'mp4'
+    const storagePath = `${user.id}/${Date.now()}.${ext}`
+
+    const { error: uploadError } = await supabase.storage
       .from('uploads')
-      .upload(fileName, video, {
-        contentType: video.type,
-        upsert: false,
-      })
+      .upload(storagePath, video, { contentType: video.type, upsert: false })
 
     if (uploadError) {
-      throw new Error(`Upload failed: ${uploadError.message}`)
+      throw new Error(`Storage upload failed: ${uploadError.message}`)
     }
 
-    // Get public URL
-    const { data: { publicUrl } } = supabase.storage.from('uploads').getPublicUrl(fileName)
+    // Signed URL - 1 hour, enough for the Python backend to download
+    const { data: signedData, error: signedError } = await supabase.storage
+      .from('uploads')
+      .createSignedUrl(storagePath, 3600)
 
-    // Delegate analysis AND database write to Python backend
-    // The IncidentRepository in the backend handles all database operations
+    if (signedError || !signedData?.signedUrl) {
+      throw new Error(`Failed to create signed URL: ${signedError?.message}`)
+    }
+
+    // Send to Python backend for analysis + DB write
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
     const analyzeResponse = await fetch(`${apiUrl}/upload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        video_url: publicUrl,
+        video_url: signedData.signedUrl,
         camera_id: `manual_${Date.now()}`,
-        camera_name: locationName || 'Manual Upload',
+        camera_name: locationName,
         lat,
         lon,
         source: 'manual',
@@ -64,28 +79,26 @@ export async function POST(request: NextRequest) {
     })
 
     if (!analyzeResponse.ok) {
-      const errorData = await analyzeResponse.json().catch(() => ({}))
-      throw new Error(errorData.detail || 'Analysis failed')
+      const err = await analyzeResponse.json().catch(() => ({}))
+      throw new Error(err.detail || `Analysis failed (${analyzeResponse.status})`)
     }
 
     const result = await analyzeResponse.json()
 
     return NextResponse.json({
       success: true,
-      incident: result.saved_incident,
-      result: {
-        incident_detected: result.incident_detected,
-        severity: result.severity,
-        incidents: result.incidents,
-        scene_summary: result.scene_summary,
-        reasoning: result.reasoning,
-      },
+      incident_detected: result.incident_detected,
+      severity: result.severity,
+      scene_summary: result.scene_summary,
+      incidents: result.incidents,
+      reasoning: result.reasoning,
+      saved_incident: result.saved_incident,
     })
 
   } catch (error) {
-    console.error('Upload error:', error)
+    console.error('[upload]', error)
     return NextResponse.json(
-      { error: 'Upload failed', details: error instanceof Error ? error.message : 'Unknown error' },
+      { success: false, error: error instanceof Error ? error.message : 'Upload failed' },
       { status: 500 }
     )
   }

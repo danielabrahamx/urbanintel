@@ -18,42 +18,48 @@ interface HeatPoint {
   incidentCount: number
 }
 
+// Camera location derived from incident rows
+interface CameraPin {
+  camera_id: string
+  camera_name: string
+  lat: number
+  lon: number
+  totalAnalyses: number
+  detectedCount: number
+  worstSeverity: Severity
+  lastAnalysis: Incident
+  source: string
+}
+
 const SEVERITY_RADIUS: Record<Severity, number> = {
-  none: 5,
-  low: 7,
-  medium: 9,
-  high: 12,
-  critical: 15,
+  none: 6,
+  low: 8,
+  medium: 10,
+  high: 13,
+  critical: 16,
 }
 
 function generateHeatPoints(incidents: Incident[]): HeatPoint[] {
-  // Group incidents by approximate location (grid-based)
   const gridSize = 0.002 // ~200m grid
   const grid = new Map<string, { lat: number; lon: number; count: number }>()
 
   for (const inc of incidents) {
     if (inc.lat == null || inc.lon == null || !inc.incident_detected) continue
-
     const gridX = Math.floor(inc.lon / gridSize)
     const gridY = Math.floor(inc.lat / gridSize)
     const key = `${gridX},${gridY}`
-
     const existing = grid.get(key)
     if (existing) {
       existing.count++
     } else {
-      grid.set(key, {
-        lat: inc.lat,
-        lon: inc.lon,
-        count: 1,
-      })
+      grid.set(key, { lat: inc.lat, lon: inc.lon, count: 1 })
     }
   }
 
   const gridValues = Array.from(grid.values())
   const maxCount = gridValues.length > 0 ? Math.max(...gridValues.map((g) => g.count)) : 1
 
-  return Array.from(grid.values()).map((cell) => ({
+  return gridValues.map((cell) => ({
     lat: cell.lat,
     lon: cell.lon,
     intensity: cell.count / maxCount,
@@ -61,43 +67,55 @@ function generateHeatPoints(incidents: Incident[]): HeatPoint[] {
   }))
 }
 
-function groupByLocation(incidents: Incident[]): Map<string, Incident[]> {
+// Build one pin per unique camera_id from all incident rows (not just detected ones)
+function buildCameraPins(incidents: Incident[]): CameraPin[] {
   const groups = new Map<string, Incident[]>()
 
   for (const inc of incidents) {
     if (inc.lat == null || inc.lon == null) continue
-
-    // Group by camera_id or approximate location
-    const key = inc.camera_id
-    const existing = groups.get(key)
+    const existing = groups.get(inc.camera_id)
     if (existing) {
       existing.push(inc)
     } else {
-      groups.set(key, [inc])
+      groups.set(inc.camera_id, [inc])
     }
   }
 
-  return groups
+  return Array.from(groups.entries()).map(([camera_id, rows]) => {
+    let worst: Severity = 'none'
+    for (const r of rows) {
+      if (SEVERITY_ORDER[r.severity] > SEVERITY_ORDER[worst]) worst = r.severity
+    }
+    const detected = rows.filter((r) => r.incident_detected)
+    return {
+      camera_id,
+      camera_name: rows[0].camera_name,
+      lat: rows[0].lat!,
+      lon: rows[0].lon!,
+      totalAnalyses: rows.length,
+      detectedCount: detected.length,
+      worstSeverity: worst,
+      lastAnalysis: rows[0], // rows are newest-first from DB
+      source: rows[0].source ?? 'tfl',
+    }
+  })
 }
 
 function getWorstSeverity(incidents: Incident[]): Severity {
   let worst: Severity = 'none'
   for (const inc of incidents) {
-    if (SEVERITY_ORDER[inc.severity] > SEVERITY_ORDER[worst]) {
-      worst = inc.severity
-    }
+    if (SEVERITY_ORDER[inc.severity] > SEVERITY_ORDER[worst]) worst = inc.severity
   }
   return worst
 }
 
 export default function MapView({ incidents, showHeatmap = true }: Props) {
   const heatPoints = useMemo(() => generateHeatPoints(incidents), [incidents])
-  const locationGroups = useMemo(() => groupByLocation(incidents), [incidents])
+  const cameraPins = useMemo(() => buildCameraPins(incidents), [incidents])
 
-  // Get center from first incident or default to London
   const center = useMemo(() => {
     const first = incidents.find((i) => i.lat != null && i.lon != null)
-    return first ? [first.lat, first.lon] : [51.505, -0.09]
+    return first ? [first.lat!, first.lon!] : [51.505, -0.09]
   }, [incidents])
 
   return (
@@ -113,7 +131,7 @@ export default function MapView({ incidents, showHeatmap = true }: Props) {
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
       />
 
-      {/* Heatmap circles */}
+      {/* Heatmap glow for detected incidents */}
       {showHeatmap &&
         heatPoints.map((point, idx) => (
           <Circle
@@ -122,108 +140,86 @@ export default function MapView({ incidents, showHeatmap = true }: Props) {
             radius={100 + point.intensity * 200}
             pathOptions={{
               fillColor: '#ef4444',
-              fillOpacity: 0.1 + point.intensity * 0.25,
+              fillOpacity: 0.08 + point.intensity * 0.2,
               color: '#ef4444',
-              weight: 1,
-              opacity: 0.4,
+              weight: 0,
+              opacity: 0,
             }}
           />
         ))}
 
-      {/* Incident markers */}
-      {Array.from(locationGroups.entries()).map(([key, locationIncidents]) => {
-        const first = locationIncidents[0]
-        const worstSeverity = getWorstSeverity(locationIncidents)
-        const detectedCount = locationIncidents.filter((i) => i.incident_detected).length
-        const lastIncident = locationIncidents[0] // Already sorted by time
-        const color = SEVERITY_COLORS[worstSeverity]
-        const radius = SEVERITY_RADIUS[worstSeverity]
-        const isCritical = worstSeverity === 'critical'
-        const isHigh = worstSeverity === 'high'
+      {/* One pin per monitored camera - always visible */}
+      {cameraPins.map((cam) => {
+        const color = SEVERITY_COLORS[cam.worstSeverity]
+        const radius = SEVERITY_RADIUS[cam.worstSeverity]
+        const hasIncident = cam.detectedCount > 0
+        const isCritical = cam.worstSeverity === 'critical'
+        const isHigh = cam.worstSeverity === 'high'
 
         return (
           <CircleMarker
-            key={key}
-            center={[first.lat!, first.lon!]}
-            radius={detectedCount > 1 ? radius + 3 : radius}
+            key={cam.camera_id}
+            center={[cam.lat, cam.lon]}
+            radius={hasIncident ? radius + 2 : radius}
             pathOptions={{
-              color: color,
-              fillColor: color,
-              fillOpacity: isCritical ? 0.9 : isHigh ? 0.8 : 0.7,
-              weight: isCritical ? 3 : 2,
+              color: hasIncident ? color : '#3b82f6',
+              fillColor: hasIncident ? color : '#1e3a5f',
+              fillOpacity: isCritical ? 0.9 : isHigh ? 0.8 : hasIncident ? 0.7 : 0.5,
+              weight: isCritical ? 3 : hasIncident ? 2 : 1.5,
               opacity: 1,
             }}
           >
             <Popup>
-              <div style={{ minWidth: 240, fontFamily: 'Inter, sans-serif' }}>
-                {/* Location name */}
-                <div style={{ fontSize: 14, fontWeight: 600, color: '#f0f2f8', marginBottom: 8 }}>
-                  {first.camera_name}
+              <div style={{ minWidth: 240, fontFamily: 'Inter, sans-serif', background: '#1a1d27', color: '#f0f2f8', padding: 4 }}>
+                {/* Camera name */}
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                  {cam.camera_name}
+                </div>
+                <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 10, fontFamily: 'monospace' }}>
+                  {cam.camera_id}
                 </div>
 
-                {/* Stats */}
-                <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
-                  <div
-                    style={{
-                      padding: '4px 10px',
-                      background: `${color}20`,
-                      border: `1px solid ${color}40`,
-                      borderRadius: 4,
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: color,
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {worstSeverity}
-                  </div>
-                  <div style={{ fontSize: 11, color: '#6b7280', display: 'flex', alignItems: 'center' }}>
-                    {detectedCount} incident{detectedCount !== 1 ? 's' : ''} detected
-                  </div>
+                {/* Status badges */}
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                  <span style={{
+                    padding: '3px 8px',
+                    background: hasIncident ? `${color}20` : '#1e3a5f',
+                    border: `1px solid ${hasIncident ? color + '60' : '#3b82f6'}`,
+                    borderRadius: 4, fontSize: 10, fontWeight: 600,
+                    color: hasIncident ? color : '#60a5fa',
+                    textTransform: 'uppercase',
+                  }}>
+                    {cam.worstSeverity}
+                  </span>
+                  <span style={{ fontSize: 11, color: '#6b7280', display: 'flex', alignItems: 'center' }}>
+                    {cam.detectedCount}/{cam.totalAnalyses} detected
+                  </span>
                 </div>
 
                 {/* Coordinates */}
-                <div style={{ fontSize: 10, color: '#4b5563', marginBottom: 12 }}>
-                  {first.lat?.toFixed(5)}, {first.lon?.toFixed(5)}
+                <div style={{ fontSize: 10, color: '#4b5563', marginBottom: 10, fontFamily: 'monospace' }}>
+                  {cam.lat.toFixed(5)}, {cam.lon.toFixed(5)}
                 </div>
 
-                {/* Last incident */}
-                {lastIncident?.incident_detected && (
-                  <div style={{ borderTop: '1px solid #2a2d3a', paddingTop: 12, marginBottom: 12 }}>
-                    <div
-                      style={{
-                        fontSize: 10,
-                        color: '#6b7280',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        marginBottom: 6,
-                      }}
-                    >
-                      Latest incident
+                {/* Last analysis summary */}
+                {cam.lastAnalysis.scene_summary && (
+                  <div style={{ borderTop: '1px solid #2a2d3a', paddingTop: 10, marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+                      Last analysis
                     </div>
-                    <div style={{ fontSize: 12, color: '#f0f2f8', marginBottom: 4, lineHeight: 1.4 }}>
-                      {lastIncident.incidents?.[0]?.type?.replace(/_/g, ' ') || 'Unknown type'}
+                    <div style={{ fontSize: 11, color: '#9ca3af', lineHeight: 1.5 }}>
+                      {cam.lastAnalysis.scene_summary}
                     </div>
-                    <div style={{ fontSize: 11, color: '#9ca3af', lineHeight: 1.5, marginBottom: 6 }}>
-                      {lastIncident.scene_summary || 'No description available'}
-                    </div>
-                    <div style={{ fontSize: 10, color: '#4b5563' }}>
-                      {formatDistanceToNow(new Date(lastIncident.created_at), { addSuffix: true })}
+                    <div style={{ fontSize: 10, color: '#4b5563', marginTop: 4 }}>
+                      {formatDistanceToNow(new Date(cam.lastAnalysis.created_at), { addSuffix: true })}
                     </div>
                   </div>
                 )}
 
-                {/* Source badge */}
-                <div style={{ borderTop: '1px solid #2a2d3a', paddingTop: 12 }}>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: '#6b7280',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.05em',
-                    }}
-                  >
-                    Source: {first.source === 'manual' ? 'Manual Upload' : 'TfL Camera'}
+                {/* Source */}
+                <div style={{ borderTop: '1px solid #2a2d3a', paddingTop: 8 }}>
+                  <span style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    {cam.source === 'manual' ? 'Manual upload' : 'TfL JamCam'}
                   </span>
                 </div>
               </div>
