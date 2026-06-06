@@ -18,6 +18,7 @@ load_dotenv()
 from shared.tfl_client import TflClient
 from shared.video_analyzer import OpenRouterAnalyzer, download_video
 from shared.config_loader import load_config
+from shared.incident_repository import IncidentRepository
 
 app = FastAPI(title="Urban Intelligence API")
 
@@ -41,6 +42,7 @@ class AnalyzeRequest(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     source: str = "tfl"
+    created_by: Optional[str] = None
 
     @field_validator("video_url")
     @classmethod
@@ -77,11 +79,12 @@ class AnalyzeResponse(BaseModel):
     incidents: list
     scene_summary: str
     reasoning: str
+    saved_incident: Optional[dict] = None
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_video_endpoint(request: AnalyzeRequest):
-    """Analyze a video from URL (TfL or manual upload)."""
+    """Analyze a video from URL, persist to DB, and return result."""
     cfg = load_config()
 
     try:
@@ -90,12 +93,36 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
     analyzer = OpenRouterAnalyzer(api_key=api_key, model=_MODEL)
+    repo = IncidentRepository.from_env()
 
     video_path = None
     try:
         video_path = download_video(request.video_url)
-
         result = analyzer.analyze(video_path)
+
+        # Persist to DB via IncidentRepository
+        saved_incident = None
+        if repo:
+            camera_id = request.camera_id or "manual"
+            camera_name = request.camera_name or camera_id
+            try:
+                repo.save(
+                    result,
+                    camera_id=camera_id,
+                    camera_name=camera_name,
+                    lat=request.lat,
+                    lon=request.lon,
+                    source=request.source,
+                )
+                saved_incident = {
+                    "camera_id": camera_id,
+                    "camera_name": camera_name,
+                    "severity": result.get("severity"),
+                    "incident_detected": result.get("incident_detected"),
+                }
+            except Exception as db_exc:
+                # Don't fail the analysis if DB write fails - log and continue
+                print(f"[warn] DB write failed: {db_exc}")
 
         return AnalyzeResponse(
             incident_detected=result.get("incident_detected", False),
@@ -103,6 +130,7 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
             incidents=result.get("incidents", []),
             scene_summary=result.get("scene_summary", ""),
             reasoning=result.get("reasoning", ""),
+            saved_incident=saved_incident,
         )
 
     except (ValueError, requests.HTTPError, requests.Timeout, requests.RequestException) as e:
@@ -112,6 +140,14 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
     finally:
         if video_path and os.path.exists(video_path):
             os.unlink(video_path)
+
+
+@app.post("/upload")
+async def upload_and_analyze_endpoint(request: AnalyzeRequest):
+    """Analyze a manually-uploaded video URL (already in Supabase Storage)."""
+    # Reuse same logic as /analyze but with source forced to "manual"
+    request.source = "manual"
+    return await analyze_video_endpoint(request)
 
 
 @app.get("/cameras/{camera_id}/video-url")
@@ -138,7 +174,12 @@ async def get_camera_video_url_endpoint(camera_id: str):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "ok", "model": _MODEL}
+    repo = IncidentRepository.from_env()
+    return {
+        "status": "ok",
+        "model": _MODEL,
+        "db": "connected" if (repo and repo.is_connected) else "not configured",
+    }
 
 
 if __name__ == "__main__":

@@ -22,10 +22,10 @@ const MapView = dynamicImport(() => import('@/components/Map'), {
 
 // Default TfL camera for demo
 const DEMO_CAMERA = {
-  id: 'JamCams_00001.07350',
-  name: 'Cambridge Circus',
-  lat: 51.513,
-  lon: -0.13,
+  id: 'JamCams_00001.07450',
+  name: 'Piccadilly Circus',
+  lat: 51.5096,
+  lon: -0.1348,
 }
 
 export default function DashboardPage() {
@@ -110,9 +110,8 @@ export default function DashboardPage() {
           detected: result.incident_detected,
           summary: result.result?.scene_summary,
         })
-        if (result.incident_detected) {
-          await loadIncidents()
-        }
+        // Reload incidents after every analysis so the feed always updates
+        await loadIncidents()
       } else {
         throw new Error(result.error || 'Analysis failed')
       }
