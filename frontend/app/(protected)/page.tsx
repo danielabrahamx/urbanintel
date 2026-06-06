@@ -138,6 +138,11 @@ export default function DashboardPage() {
         body: formData,
       })
 
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}))
+        throw new Error(err.error || err.details || `Upload failed (${response.status})`)
+      }
+
       const result = await response.json()
 
       if (result.success) {

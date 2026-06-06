@@ -162,7 +162,7 @@ export default function IncidentsPage() {
       setCameras(cams)
     }
     setLoading(false)
-  }, [dateRange])
+  }, [dateRange, supabase])
 
   useEffect(() => { loadIncidents() }, [loadIncidents])
 

@@ -50,7 +50,8 @@ function generateHeatPoints(incidents: Incident[]): HeatPoint[] {
     }
   }
 
-  const maxCount = Math.max(...Array.from(grid.values()).map((g) => g.count), 1)
+  const gridValues = Array.from(grid.values())
+  const maxCount = gridValues.length > 0 ? Math.max(...gridValues.map((g) => g.count)) : 1
 
   return Array.from(grid.values()).map((cell) => ({
     lat: cell.lat,
