@@ -197,13 +197,58 @@ export default function DashboardPage() {
 
     const formData = new FormData(e.currentTarget)
     const locationName = (formData.get('locationName') as string) || 'Manual Upload'
-    formData.set('lat', uploadCoords.lat.toString())
-    formData.set('lon', uploadCoords.lon.toString())
+    const videoFile = formData.get('video') as File | null
+
+    if (!videoFile) {
+      setUploadError('Please select a video file')
+      setUploading(false)
+      return
+    }
+
+    const MAX_MB = 50
+    if (videoFile.size > MAX_MB * 1024 * 1024) {
+      setUploadError(`File too large (max ${MAX_MB}MB)`)
+      setUploading(false)
+      return
+    }
 
     try {
+      // 1. Get signed upload URL from server
+      const urlResponse = await fetch('/api/upload-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: videoFile.name,
+          contentType: videoFile.type,
+        }),
+      })
+
+      if (!urlResponse.ok) {
+        const err = await urlResponse.json().catch(() => ({}))
+        throw new Error(err.error || `Failed to get upload URL (${urlResponse.status})`)
+      }
+
+      const { signedUrl, token, path } = await urlResponse.json()
+
+      // 2. Upload directly to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from('uploads')
+        .uploadToSignedUrl(path, token, videoFile, { contentType: videoFile.type })
+
+      if (uploadError) {
+        throw new Error(`Direct upload failed: ${uploadError.message}`)
+      }
+
+      // 3. Trigger analysis via backend
       const response = await fetch('/api/upload', {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path,
+          lat: uploadCoords.lat,
+          lon: uploadCoords.lon,
+          locationName,
+        }),
       })
 
       if (!response.ok) {
