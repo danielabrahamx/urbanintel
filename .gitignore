@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+env_staging.txt
+
+# Devin agent artifacts
+.devin/
 
 # Python
 __pycache__/

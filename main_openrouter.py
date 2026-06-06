@@ -5,7 +5,6 @@ import os
 import sys
 import tempfile
 import time
-import warnings
 from datetime import datetime
 
 import requests
@@ -15,7 +14,6 @@ from config import (
     ALERT_THRESHOLD,
     POLL_INTERVAL_SECONDS,
     TARGET_CAMERA_ID,
-    TFL_APP_ID,
     TFL_APP_KEY,
 )
 
@@ -115,11 +113,9 @@ Respond ONLY with this JSON - no preamble, no markdown, no explanation outside i
 
 def get_camera_video_url(camera_id: str) -> tuple[str, str, float | None, float | None]:
     """Fetch camera list from TfL and return (video_url, camera_name, lat, lon).
-    Re-fetches every poll because TfL can rotate JamCam URLs.
+    Re-fetches every poll because TfL rotates JamCam URLs.
     """
     params = {}
-    if TFL_APP_ID:
-        params["app_id"] = TFL_APP_ID
     if TFL_APP_KEY:
         params["app_key"] = TFL_APP_KEY
 
@@ -207,10 +203,7 @@ def print_result(result: dict, camera_name: str) -> None:
     print(f"  Scene    : {result.get('scene_summary', '')}")
     print(f"  Reasoning: {result.get('reasoning', '')}")
     for inc in result.get("incidents", []):
-        incident_type = inc.get("type", "UNKNOWN")
-        description = inc.get("description", "")
-        confidence = inc.get("confidence", "?")
-        print(f"  -> [{incident_type}] {description} (confidence: {confidence})")
+        print(f"  -> [{inc.get('type', 'UNKNOWN')}] {inc.get('description', '')} (confidence: {inc.get('confidence', '?')})")
     print(f"{'=' * 65}\n")
 
 
@@ -222,18 +215,21 @@ def main() -> None:
         sys.exit(1)
 
     api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key or api_key == "sk-or-v1-YOUR_KEY_HERE":
-        print("ERROR: Set OPENROUTER_API_KEY environment variable.")
+    if not api_key:
+        print("ERROR: Set OPENROUTER_API_KEY in .env")
         print("Get a key at: https://openrouter.ai/keys")
         sys.exit(1)
+
+    if not TFL_APP_KEY:
+        print("[warn] TFL_APP_KEY not set - using anonymous TfL access (low rate limit)")
 
     supabase_client = _init_supabase()
     if supabase_client:
         print("   DB     : Supabase connected")
     else:
-        print("   DB     : not configured (set NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)")
+        print("   DB     : not configured (set NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in .env)")
 
-    print("Urban Intelligence Agent (OpenRouter Mode)")
+    print("Urban Intelligence - OpenRouter watcher")
     print(f"   Camera : {TARGET_CAMERA_ID}")
     print(f"   Model  : {VISION_MODEL}")
     print(f"   Poll   : every {POLL_INTERVAL_SECONDS}s")
@@ -254,7 +250,7 @@ def main() -> None:
             print("  Downloading video...", end=" ", flush=True)
             video_path = download_video(video_url)
             size_kb = os.path.getsize(video_path) // 1024
-            print(f"done ({size_kb}KB)")
+            print(f"done ({size_kb} KB)")
 
             result = analyze_video(video_path, api_key)
             print_result(result, camera_name)
