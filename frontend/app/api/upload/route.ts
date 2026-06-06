@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase-server'
+import { createServiceClient } from '@/lib/supabase'
 
 // Raise body size limit for this route to handle 50MB video uploads
 export const maxDuration = 60 // seconds
@@ -16,12 +17,9 @@ export const dynamic = 'force-dynamic'
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient()
-
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    const authClient = await createServerSupabaseClient()
+    const supabase = createServiceClient()
+    const { data: { user } } = await authClient.auth.getUser()
 
     const formData = await request.formData()
     const video = formData.get('video') as File | null
@@ -43,7 +41,8 @@ export async function POST(request: NextRequest) {
 
     // Upload to private Supabase Storage bucket
     const ext = video.name.split('.').pop() ?? 'mp4'
-    const storagePath = `${user.id}/${Date.now()}.${ext}`
+    const uploaderId = user?.id ?? 'public'
+    const storagePath = `${uploaderId}/${Date.now()}.${ext}`
 
     const { error: uploadError } = await supabase.storage
       .from('uploads')
@@ -63,7 +62,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Send to Python backend for analysis + DB write
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+    const apiUrl = process.env.BACKEND_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
     const analyzeResponse = await fetch(`${apiUrl}/upload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -74,7 +73,7 @@ export async function POST(request: NextRequest) {
         lat,
         lon,
         source: 'manual',
-        created_by: user.id,
+        created_by: user?.id,
       }),
     })
 

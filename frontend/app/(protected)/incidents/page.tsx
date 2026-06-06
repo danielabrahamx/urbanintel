@@ -146,23 +146,28 @@ export default function IncidentsPage() {
 
   const loadIncidents = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('incidents')
-      .select('*')
-      .eq('incident_detected', true)
-      .gte('created_at', dateRange.from.toISOString())
-      .lte('created_at', dateRange.to.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(5000)
-
-    if (!error && data) {
-      const rows = data as Incident[]
-      setIncidents(rows)
-      const cams = [...new Set(rows.map(r => r.camera_name))].sort()
-      setCameras(cams)
+    try {
+      const params = new URLSearchParams({
+        detectedOnly: 'true',
+        since: dateRange.from.toISOString(),
+        limit: '5000',
+      })
+      const res = await fetch(`/api/incidents?${params.toString()}`, { cache: 'no-store' })
+      const json = await res.json()
+      if (res.ok && Array.isArray(json.incidents)) {
+        const rows = (json.incidents as Incident[]).filter(
+          (r) => new Date(r.created_at) <= dateRange.to
+        )
+        setIncidents(rows)
+        const cams = [...new Set(rows.map(r => r.camera_name))].sort()
+        setCameras(cams)
+      }
+    } catch (err) {
+      console.error('Failed to load incidents:', err)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
-  }, [dateRange, supabase])
+  }, [dateRange])
 
   useEffect(() => { loadIncidents() }, [loadIncidents])
 

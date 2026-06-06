@@ -11,7 +11,7 @@ import { createServerSupabaseClient } from '@/lib/supabase-server'
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient()
-    const { videoUrl, cameraId, cameraName, lat, lon, source = 'tfl' } = await request.json()
+    const { videoUrl, cameraId, cameraName, lat, lon, source = 'tfl', secondOpinion = false } = await request.json()
 
     // Verify user is authenticated
     const { data: { user } } = await supabase.auth.getUser()
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
 
     // Delegate to Python backend for analysis AND database write
     // The backend's IncidentRepository handles all database operations
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+    const apiUrl = process.env.BACKEND_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
     const analyzeResponse = await fetch(`${apiUrl}/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
         lon,
         source,
         created_by: user.id,
+        second_opinion: secondOpinion,
       }),
     })
 

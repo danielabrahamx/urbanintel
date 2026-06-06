@@ -77,27 +77,28 @@ SEVERITY_EMOJI: dict[str, str] = {
     "critical": "[!!!]",
 }
 
-ANALYSIS_PROMPT: str = """You are an automated road safety system watching a 10-second clip
-from a fixed TfL traffic camera at a London road junction.
+#: Shared definition of the dangerous events the model must spot, plus
+#: detailed visual cues so the model knows *what each one looks like* rather
+#: than just its name.
+_EVENT_TAXONOMY: str = """Dangerous events to flag (use the exact type string):
+- NEAR_MISS: two road users (vehicle/vehicle, vehicle/pedestrian, vehicle/cyclist)
+  come close enough that a collision was narrowly avoided. Visual cues: hard braking,
+  sudden swerve to avoid, one party stopping abruptly, paths crossing with little gap,
+  brake lights flaring just before contact would have happened.
+- RED_LIGHT_VIOLATION: a vehicle crosses the stop line / enters the junction while its
+  signal is red. Cue: red light visible AND vehicle continues through.
+- WRONG_WAY: vehicle travelling against the established direction of traffic flow.
+- DANGEROUS_OVERTAKE: overtaking into oncoming traffic, across solid lines, or with
+  insufficient clearance.
+- PEDESTRIAN_IN_ROAD: a person in the live carriageway exposed to moving traffic
+  (not on a pavement or a green-man crossing).
+- VEHICLE_STOPPED_DANGEROUSLY: vehicle stationary in a live lane, junction box,
+  crossing, or blocking traffic where it should not be.
+- AGGRESSIVE_DRIVING: sudden swerving, weaving, or obvious tailgating.
+- CYCLIST_RISK: cyclist squeezed by, undertaking, or in the blind spot of a larger
+  vehicle (bus, lorry, van) at close range."""
 
-Your job: detect dangerous driving behaviour and near-miss incidents from vehicle and
-pedestrian movement patterns. Resolution is low - you cannot and must not attempt to
-identify faces, individuals, or number plates.
-
-Dangerous events to flag:
-- NEAR_MISS: vehicle comes dangerously close to a pedestrian or another vehicle
-- RED_LIGHT_VIOLATION: vehicle clearly runs a red light
-- WRONG_WAY: vehicle moving against traffic flow
-- DANGEROUS_OVERTAKE: unsafe overtaking manoeuvre
-- PEDESTRIAN_IN_ROAD: person in the carriageway in danger
-- VEHICLE_STOPPED_DANGEROUSLY: vehicle stopped in a live lane, junction box, or crossroads
-- AGGRESSIVE_DRIVING: sudden swerving or obvious tailgating
-- CYCLIST_RISK: cyclist in dangerous proximity to a larger vehicle
-
-Only flag what you can clearly observe. If in doubt, do not flag.
-When in doubt, return incident_detected: false. A false negative is better than a false positive.
-
-Respond ONLY with this JSON - no preamble, no markdown, no explanation outside it:
+_JSON_SCHEMA: str = """Respond ONLY with this JSON - no preamble, no markdown, no explanation outside it:
 {
   "incident_detected": true | false,
   "severity": "none" | "low" | "medium" | "high" | "critical",
@@ -112,7 +113,59 @@ Respond ONLY with this JSON - no preamble, no markdown, no explanation outside i
   ],
   "scene_summary": "<one sentence describing overall traffic conditions>",
   "reasoning": "<one sentence explaining why you did or did not flag an incident>"
-}"""
+}
+
+Set incident_detected to true whenever the incidents array is non-empty, and pick the
+overall severity from the most serious item. Keep incident_detected false (empty
+incidents) only when nothing dangerous is visible."""
+
+#: Context framing per footage source. The opening framing matters a lot: it tells
+#: the model what kind of camera it is looking through, which changes what counts as
+#: "normal" vs "dangerous".
+_SOURCE_FRAMING: dict[str, str] = {
+    "tfl": (
+        "You are an automated road-safety monitor watching a short clip from a FIXED,\n"
+        "overhead TfL traffic camera at a London road junction. The view is wide and\n"
+        "low-resolution. Judge danger from movement patterns across the whole junction.\n"
+        "Only flag what you can clearly observe; if genuinely in doubt, do not flag."
+    ),
+    "manual": (
+        "You are a road-safety incident reviewer watching USER-SUBMITTED footage that a\n"
+        "member of the public uploaded to report a dangerous moment. It may be dashcam,\n"
+        "phone, helmet-cam, or CCTV from ANY angle and distance - not a fixed junction\n"
+        "camera. Assume the uploader saw something concerning, so look hard for it.\n"
+        "Bias toward triage: flag a plausible NEAR_MISS or other event when you see\n"
+        "evasive braking, swerving, abrupt stopping, a road user entering another's path,\n"
+        "or dangerous proximity, even if the angle or quality is imperfect. Use\n"
+        '"confidence": "low" when evidence is partial, but do NOT dismiss a likely\n'
+        "near-miss just because the footage is shaky, brief, or low quality."
+    ),
+}
+# 'upload' is an alias for 'manual'.
+_SOURCE_FRAMING["upload"] = _SOURCE_FRAMING["manual"]
+
+
+def build_analysis_prompt(source: str = "tfl") -> str:
+    """Return a source-aware analysis prompt.
+
+    Parameters
+    ----------
+    source:
+        ``"tfl"`` for fixed overhead camera monitoring (conservative), or
+        ``"manual"``/``"upload"`` for user-submitted footage (triage-biased).
+        Unknown values fall back to the TfL framing.
+    """
+    framing = _SOURCE_FRAMING.get(source, _SOURCE_FRAMING["tfl"])
+    return (
+        f"{framing}\n\n"
+        "You must not attempt to identify faces, individuals, or number plates.\n\n"
+        f"{_EVENT_TAXONOMY}\n\n"
+        f"{_JSON_SCHEMA}"
+    )
+
+
+#: Backward-compatible default prompt (TfL framing) used by existing callers/tests.
+ANALYSIS_PROMPT: str = build_analysis_prompt("tfl")
 
 #: Default OpenRouter endpoint.
 OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
@@ -285,11 +338,13 @@ class GeminiAnalyzer(BaseAnalyzer):
         genai.configure(api_key=api_key)
         self._genai = genai
 
-    def analyze(self, video_path: str) -> dict:
+    def analyze(self, video_path: str, source: str = "tfl") -> dict:
         """Upload to Gemini, analyse, delete, and return parsed JSON.
 
         The remote file is always deleted in a finally block so we don't leak
         storage quota even on errors.
+
+        ``source`` selects the prompt framing ("tfl" vs "manual"/"upload").
         """
         self._validate_path(video_path)
 
@@ -312,7 +367,7 @@ class GeminiAnalyzer(BaseAnalyzer):
             print("  Analysing...", end=" ", flush=True)
             model = self._genai.GenerativeModel(self._model)
             response = model.generate_content(
-                [uploaded_file, ANALYSIS_PROMPT],
+                [uploaded_file, build_analysis_prompt(source)],
                 generation_config={"response_mime_type": "application/json"},
             )
             print("done")
@@ -384,7 +439,7 @@ class OpenRouterAnalyzer(BaseAnalyzer):
             "Call analyze_url(video_url) and pass the original signed URL instead."
         )
 
-    def analyze_url(self, video_url: str) -> dict:
+    def analyze_url(self, video_url: str, source: str = "tfl") -> dict:
         """Analyze a video by passing its HTTP URL directly to the model.
 
         Parameters
@@ -392,6 +447,8 @@ class OpenRouterAnalyzer(BaseAnalyzer):
         video_url:
             A publicly-accessible (or signed) HTTPS URL to an MP4 video.
             Must be reachable by the OpenRouter/Minimax backend.
+        source:
+            Selects the prompt framing ("tfl" vs "manual"/"upload").
         """
         if not video_url.startswith(("http://", "https://")):
             raise AnalysisError(f"video_url must be an HTTP/HTTPS URL, got: {video_url[:80]}")
@@ -407,7 +464,7 @@ class OpenRouterAnalyzer(BaseAnalyzer):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": ANALYSIS_PROMPT},
+                        {"type": "text", "text": build_analysis_prompt(source)},
                         {"type": "video_url", "video_url": {"url": video_url}},
                     ],
                 }

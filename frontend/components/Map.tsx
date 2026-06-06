@@ -4,7 +4,25 @@ import { MapContainer, TileLayer, CircleMarker, Popup, Circle } from 'react-leaf
 import 'leaflet/dist/leaflet.css'
 import { Incident, Severity, SEVERITY_COLORS, SEVERITY_ORDER } from '@/lib/types'
 import { formatDistanceToNow } from 'date-fns'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+
+// Fetch live TfL camera URL and open it
+async function openTflCamera(cameraId: string) {
+  try {
+    const response = await fetch(`https://api.tfl.gov.uk/Place/${cameraId}`)
+    if (!response.ok) throw new Error('Failed to fetch camera')
+    const camera = await response.json()
+    const videoUrl = camera.additionalProperties?.find((p: any) => p.key === 'videoUrl')?.value
+    if (videoUrl) {
+      window.open(videoUrl, '_blank', 'noopener,noreferrer')
+    } else {
+      alert('No live video available for this camera')
+    }
+  } catch (error) {
+    console.error('Failed to fetch camera URL:', error)
+    alert('Failed to load camera feed')
+  }
+}
 
 interface Props {
   incidents: Incident[]
@@ -29,14 +47,15 @@ interface CameraPin {
   worstSeverity: Severity
   lastAnalysis: Incident
   source: string
+  videoUrl: string | null
 }
 
 const SEVERITY_RADIUS: Record<Severity, number> = {
-  none: 6,
-  low: 8,
-  medium: 10,
-  high: 13,
-  critical: 16,
+  none: 10,
+  low: 12,
+  medium: 14,
+  high: 17,
+  critical: 20,
 }
 
 function generateHeatPoints(incidents: Incident[]): HeatPoint[] {
@@ -87,6 +106,8 @@ function buildCameraPins(incidents: Incident[]): CameraPin[] {
       if (SEVERITY_ORDER[r.severity] > SEVERITY_ORDER[worst]) worst = r.severity
     }
     const detected = rows.filter((r) => r.incident_detected)
+    // Get most recent video URL from any row
+    const videoUrl = rows.find((r) => r.video_url)?.video_url ?? null
     return {
       camera_id,
       camera_name: rows[0].camera_name,
@@ -97,6 +118,7 @@ function buildCameraPins(incidents: Incident[]): CameraPin[] {
       worstSeverity: worst,
       lastAnalysis: rows[0], // rows are newest-first from DB
       source: rows[0].source ?? 'tfl',
+      videoUrl,
     }
   })
 }
@@ -162,10 +184,10 @@ export default function MapView({ incidents, showHeatmap = true }: Props) {
             center={[cam.lat, cam.lon]}
             radius={hasIncident ? radius + 2 : radius}
             pathOptions={{
-              color: hasIncident ? color : '#3b82f6',
-              fillColor: hasIncident ? color : '#1e3a5f',
-              fillOpacity: isCritical ? 0.9 : isHigh ? 0.8 : hasIncident ? 0.7 : 0.5,
-              weight: isCritical ? 3 : hasIncident ? 2 : 1.5,
+              color: hasIncident ? color : '#00d4ff',
+              fillColor: hasIncident ? color : '#00d4ff',
+              fillOpacity: hasIncident ? (isCritical ? 0.95 : isHigh ? 0.85 : 0.75) : 0.6,
+              weight: hasIncident ? (isCritical ? 3 : 2) : 2,
               opacity: 1,
             }}
           >
@@ -217,11 +239,49 @@ export default function MapView({ incidents, showHeatmap = true }: Props) {
                 )}
 
                 {/* Source */}
-                <div style={{ borderTop: '1px solid #2a2d3a', paddingTop: 8 }}>
+                <div style={{ borderTop: '1px solid #2a2d3a', paddingTop: 8, marginBottom: 10 }}>
                   <span style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {cam.source === 'manual' ? 'Manual upload' : 'TfL JamCam'}
                   </span>
                 </div>
+
+                {/* View Camera Link - for TfL cameras, fetch live URL dynamically */}
+                <button
+                  onClick={() => {
+                    if (cam.source === 'tfl') {
+                      openTflCamera(cam.camera_id)
+                    } else if (cam.videoUrl) {
+                      window.open(cam.videoUrl, '_blank', 'noopener,noreferrer')
+                    }
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    padding: '8px 12px',
+                    background: '#00d4ff20',
+                    border: '1px solid #00d4ff60',
+                    borderRadius: 6,
+                    color: '#00d4ff',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textDecoration: 'none',
+                    cursor: 'pointer',
+                    width: '100%',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = '#00d4ff30'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = '#00d4ff20'
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                  </svg>
+                  View Live Camera
+                </button>
               </div>
             </Popup>
           </CircleMarker>

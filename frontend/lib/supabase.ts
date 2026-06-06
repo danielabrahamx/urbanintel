@@ -12,6 +12,7 @@
  *                 const supabase = factory.createForRequest(request, response)
  */
 import { createBrowserClient as createBrowserClientSSR, createServerClient as createServerClientSSR } from '@supabase/ssr'
+import { createClient as createRawSupabaseClient } from '@supabase/supabase-js'
 import type { NextRequest, NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -20,22 +21,35 @@ interface SupabaseConfig {
   anonKey: string
 }
 
+// Harmless placeholders so client construction never throws during the Next.js
+// build/prerender pass when env vars are absent. Real values are inlined at build
+// when present (NEXT_PUBLIC_*) or read at runtime on the server. If these
+// placeholders ever reach a real request, the call fails loudly at that point
+// instead of crashing the entire build.
+const PLACEHOLDER_URL = 'https://placeholder.supabase.co'
+const PLACEHOLDER_ANON = 'placeholder-anon-key'
+
 function getConfig(): SupabaseConfig {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 
   if (!url || !anonKey) {
-    throw new Error(
-      'Missing Supabase environment variables. ' +
-      'Check NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'
-    )
+    // Do NOT throw here: this runs during prerender of client pages at build
+    // time. Throwing fails the whole Vercel build. Warn and fall back instead.
+    if (typeof window !== 'undefined') {
+      console.warn(
+        'Missing Supabase env vars (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY). ' +
+        'Set them in your Vercel project settings.'
+      )
+    }
+    return { url: url || PLACEHOLDER_URL, anonKey: anonKey || PLACEHOLDER_ANON }
   }
 
-  // Validate URL format
+  // Validate URL format; fall back rather than crash the build on a bad value.
   try {
     new URL(url)
   } catch {
-    throw new Error(`Invalid SUPABASE_URL: ${url}`)
+    return { url: PLACEHOLDER_URL, anonKey }
   }
 
   return { url, anonKey }
@@ -66,6 +80,22 @@ export type TypedSupabaseClient = SupabaseClient
 export function createClient(): TypedSupabaseClient {
   const config = getCachedConfig()
   return createBrowserClientSSR(config.url, config.anonKey)
+}
+
+export function createServiceClient(): TypedSupabaseClient {
+  const config = getCachedConfig()
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!serviceRoleKey) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY')
+  }
+
+  return createRawSupabaseClient(config.url, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  })
 }
 
 /**

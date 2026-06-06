@@ -4,6 +4,7 @@ Used by the frontend for TfL clips and manual uploads.
 """
 
 import os
+from urllib.parse import urlparse
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -22,10 +23,25 @@ from shared.incident_repository import IncidentRepository
 
 app = FastAPI(title="Urban Intelligence API")
 
+def _cors_origins() -> list[str]:
+    origins = [
+        "http://localhost:3000",
+        "https://localhost:3000",
+    ]
+    extra = os.getenv("CORS_ORIGINS", "")
+    origins.extend(origin.strip() for origin in extra.split(",") if origin.strip())
+
+    vercel_url = os.getenv("VERCEL_URL")
+    if vercel_url:
+        parsed = urlparse(vercel_url if "://" in vercel_url else f"https://{vercel_url}")
+        origins.append(f"{parsed.scheme}://{parsed.netloc}")
+
+    return sorted(set(origins))
+
 # CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://localhost:3000"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -113,12 +129,12 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
             video_path = None
             try:
                 video_path = download_video(request.video_url)
-                result = analyzer.analyze(video_path)
+                result = analyzer.analyze(video_path, source=request.source)
             finally:
                 if video_path and os.path.exists(video_path):
                     os.unlink(video_path)
         else:
-            result = analyzer.analyze_url(request.video_url)
+            result = analyzer.analyze_url(request.video_url, source=request.source)
 
         # Persist to DB via IncidentRepository
         saved_incident = None
@@ -126,15 +142,17 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
             camera_id = request.camera_id or "manual"
             camera_name = request.camera_name or camera_id
             try:
-                repo.save(
+                saved_row = repo.save(
                     result,
                     camera_id=camera_id,
                     camera_name=camera_name,
                     lat=request.lat,
                     lon=request.lon,
                     source=request.source,
+                    video_url=request.video_url if request.source == "manual" else None,
+                    created_by=request.created_by,
                 )
-                saved_incident = {
+                saved_incident = saved_row if isinstance(saved_row, dict) else {
                     "camera_id": camera_id,
                     "camera_name": camera_name,
                     "severity": result.get("severity"),

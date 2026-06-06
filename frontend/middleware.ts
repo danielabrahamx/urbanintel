@@ -11,14 +11,8 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   const { pathname } = request.nextUrl
 
-  // Redirect unauthenticated users to login
-  if (!user && pathname !== '/login') {
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return NextResponse.redirect(url)
-  }
-
-  // Redirect authenticated users away from login page
+  // The map and upload flow are public so people can submit footage remotely.
+  // Login remains available only for optional admin sessions.
   if (user && pathname === '/login') {
     const url = request.nextUrl.clone()
     url.pathname = '/'

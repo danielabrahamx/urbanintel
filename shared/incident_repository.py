@@ -117,7 +117,9 @@ class IncidentRepository:
         lat: Optional[float],
         lon: Optional[float],
         source: str = "gemini",
-    ) -> None:
+        video_url: Optional[str] = None,
+        created_by: Optional[str] = None,
+    ) -> Optional[dict]:
         """Persist an analysis result to the ``incidents`` table.
 
         Parameters
@@ -144,7 +146,7 @@ class IncidentRepository:
             If the Supabase insert fails.
         """
         if self._client is None:
-            return  # no-op when not configured
+            return None  # no-op when not configured
 
         self._validate_camera_id(camera_id)
         self._validate_analysis_result(analysis_result)
@@ -161,10 +163,13 @@ class IncidentRepository:
             "reasoning": analysis_result.get("reasoning", ""),
             "raw_response": analysis_result,
             "source": source,
+            "video_url": video_url,
+            "created_by": created_by,
         }
 
         try:
-            self._client.table("incidents").insert(row).execute()
+            response = self._client.table("incidents").insert(row).execute()
+            return response.data[0] if response.data else None
         except Exception as exc:
             raise RepositoryError(
                 f"Failed to write incident for camera {camera_id!r}: {exc}"
