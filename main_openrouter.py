@@ -19,6 +19,49 @@ from config import (
     TFL_APP_KEY,
 )
 
+from supabase import create_client as _create_supabase_client
+
+
+def _init_supabase():
+    """Initialize Supabase client if credentials are available."""
+    url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if url and key:
+        try:
+            return _create_supabase_client(url, key)
+        except Exception as exc:
+            print(f"[warn] Supabase init failed: {exc}")
+    return None
+
+
+def write_incident(
+    supabase_client,
+    result: dict,
+    camera_id: str,
+    camera_name: str,
+    lat: float | None,
+    lon: float | None,
+) -> None:
+    """Write analysis result to Supabase incidents table. No-op if client is None."""
+    if supabase_client is None:
+        return
+    try:
+        supabase_client.table("incidents").insert({
+            "camera_id": camera_id,
+            "camera_name": camera_name,
+            "lat": lat,
+            "lon": lon,
+            "incident_detected": result.get("incident_detected", False),
+            "severity": result.get("severity", "none"),
+            "incidents": result.get("incidents", []),
+            "scene_summary": result.get("scene_summary", ""),
+            "reasoning": result.get("reasoning", ""),
+            "raw_response": result,
+        }).execute()
+    except Exception as exc:
+        print(f"  [warn] Supabase write failed: {exc}")
+
+
 SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 SEVERITY_EMOJI = {
     "none": "[OK]",
@@ -65,8 +108,8 @@ Respond ONLY with this JSON - no preamble, no markdown, no explanation outside i
 }"""
 
 
-def get_camera_image_url(camera_id: str) -> tuple[str, str]:
-    """Fetch camera and return (image_url, camera_name)."""
+def get_camera_image_url(camera_id: str) -> tuple[str, str, float | None, float | None]:
+    """Fetch camera and return (image_url, camera_name, lat, lon)."""
     params = {}
     if TFL_APP_ID:
         params["app_id"] = TFL_APP_ID
@@ -84,7 +127,7 @@ def get_camera_image_url(camera_id: str) -> tuple[str, str]:
         name = cam.get("commonName", camera_id)
         for prop in cam.get("additionalProperties", []):
             if prop.get("key") == "imageUrl":
-                return prop["value"], name
+                return prop["value"], name, cam.get("lat"), cam.get("lon")
 
     raise ValueError(f"Camera {camera_id} not found or has no imageUrl")
 
@@ -183,6 +226,12 @@ def main() -> None:
         print("Get a key at: https://openrouter.ai/keys")
         sys.exit(1)
 
+    supabase_client = _init_supabase()
+    if supabase_client:
+        print("   DB     : Supabase connected")
+    else:
+        print("   DB     : not configured (set NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)")
+
     print("Urban Intelligence Agent (OpenRouter Mode)")
     print(f"   Camera : {TARGET_CAMERA_ID}")
     print(f"   Model  : {VISION_MODEL}")
@@ -198,7 +247,7 @@ def main() -> None:
         image_path = None
         try:
             print("  Fetching image URL from TfL...", end=" ", flush=True)
-            image_url, camera_name = get_camera_image_url(TARGET_CAMERA_ID)
+            image_url, camera_name, lat, lon = get_camera_image_url(TARGET_CAMERA_ID)
             print(f"done ({camera_name})")
 
             print("  Downloading image...", end=" ", flush=True)
@@ -208,6 +257,7 @@ def main() -> None:
 
             result = analyze_image(image_path, api_key)
             print_result(result, camera_name)
+            write_incident(supabase_client, result, TARGET_CAMERA_ID, camera_name, lat, lon)
 
         except Exception as exc:
             print(f"  ERROR: {exc}")
