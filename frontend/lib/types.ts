@@ -21,7 +21,7 @@ export interface Incident {
   scene_summary: string | null
   reasoning: string | null
   raw_response: Record<string, unknown> | null
-  source?: 'tfl' | 'manual'
+  source?: 'tfl' | 'manual' | 'upload'
   video_url?: string | null
 }
 

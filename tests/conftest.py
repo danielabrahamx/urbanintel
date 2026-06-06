@@ -250,46 +250,4 @@ def mock_env_vars():
     # Cleanup handled by clean_env fixture if used together, or manually
 
 
-# =============================================================================
-# Patch Fixtures
-# =============================================================================
 
-@pytest.fixture
-def patch_requests_get():
-    """Patch requests.get for TfL API testing."""
-    with patch("main.requests.get") as mock_get:
-        yield mock_get
-
-
-@pytest.fixture
-def patch_requests_post():
-    """Patch requests.post for OpenRouter API testing."""
-    with patch("main_openrouter.requests.post") as mock_post:
-        yield mock_post
-
-
-@pytest.fixture
-def patch_genai():
-    """Patch Google Generative AI for Gemini testing."""
-    with patch("main.genai") as mock_genai:
-        yield mock_genai
-
-
-@pytest.fixture
-def patch_tempfile():
-    """Patch tempfile for testing file operations."""
-    with patch("main.tempfile.NamedTemporaryFile") as mock_temp:
-        yield mock_temp
-
-
-@pytest.fixture
-def patch_config():
-    """Patch config values for testing."""
-    with patch("main.TARGET_CAMERA_ID", "JamCams_00001.07350") as mock_target, \
-         patch("main.TFL_APP_KEY", "test-key") as mock_key, \
-         patch("main.ALERT_THRESHOLD", "medium") as mock_threshold:
-        yield {
-            "TARGET_CAMERA_ID": mock_target,
-            "TFL_APP_KEY": mock_key,
-            "ALERT_THRESHOLD": mock_threshold,
-        }

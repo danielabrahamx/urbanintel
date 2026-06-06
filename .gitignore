@@ -1,4 +1,4 @@
-# Secrets
+# Secrets — NEVER commit these
 .env
 .env.*
 !.env.example
@@ -18,17 +18,25 @@ venv/
 dist/
 build/
 
-# Temp / working files
+# Temp / working / debug files
 analysis_frames/
 eval_results.json
 *.mp4
 *.jpg
 *.jpeg
+backend.log
+debug_*.py
+eval_clips/
 
-# Node (for future frontend)
+# Node / Next.js
 node_modules/
 .next/
 .vercel/
+
+# Deployment artifacts & dev tools
+.tools/
+*.exe
+*.log
 
 # OS
 .DS_Store

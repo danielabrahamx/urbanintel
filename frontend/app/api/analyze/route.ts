@@ -13,11 +13,8 @@ export async function POST(request: NextRequest) {
     const supabase = await createServerSupabaseClient()
     const { videoUrl, cameraId, cameraName, lat, lon, source = 'tfl', secondOpinion = false } = await request.json()
 
-    // Verify user is authenticated
+    // Auth is optional — the app is public by design
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
 
     // Delegate to Python backend for analysis AND database write
     // The backend's IncidentRepository handles all database operations
@@ -32,7 +29,7 @@ export async function POST(request: NextRequest) {
         lat,
         lon,
         source,
-        created_by: user.id,
+        created_by: user?.id ?? null,
         second_opinion: secondOpinion,
       }),
     })

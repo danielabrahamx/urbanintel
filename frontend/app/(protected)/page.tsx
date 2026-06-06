@@ -390,7 +390,7 @@ export default function DashboardPage() {
             }}
           >
             {analyzing ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={16} />}
-            {analyzing ? 'Fetching & analyzing clip...' : 'Analyze Latest Clip'}
+            {analyzing ? 'Fetching live status...' : 'Get Live Status'}
           </button>
 
           {/* Analysis Result */}
