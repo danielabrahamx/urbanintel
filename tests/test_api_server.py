@@ -38,18 +38,10 @@ class TestHealthEndpoint:
 class TestAnalyzeEndpointSuccess:
     """Test successful video analysis endpoint."""
 
-    @patch("shared.video_analyzer.requests.get")
-    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze")
-    def test_analyze_endpoint_success(self, mock_analyze, mock_requests_get):
+    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze_url")
+    def test_analyze_endpoint_success(self, mock_analyze_url):
         """Test successful video analysis with incident detection."""
-        # Setup mock video download
-        mock_response = MagicMock()
-        mock_response.content = b"fake video content"
-        mock_response.raise_for_status.return_value = None
-        mock_requests_get.return_value = mock_response
-
-        # Setup mock analysis result
-        mock_analyze.return_value = {
+        mock_analyze_url.return_value = {
             "incident_detected": True,
             "severity": "high",
             "incidents": [
@@ -82,16 +74,10 @@ class TestAnalyzeEndpointSuccess:
         assert len(data["incidents"]) == 1
         assert data["incidents"][0]["type"] == "NEAR_MISS"
 
-    @patch("shared.video_analyzer.requests.get")
-    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze")
-    def test_analyze_endpoint_no_incident(self, mock_analyze, mock_requests_get):
+    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze_url")
+    def test_analyze_endpoint_no_incident(self, mock_analyze_url):
         """Test successful video analysis with no incident."""
-        mock_response = MagicMock()
-        mock_response.content = b"fake video content"
-        mock_response.raise_for_status.return_value = None
-        mock_requests_get.return_value = mock_response
-
-        mock_analyze.return_value = {
+        mock_analyze_url.return_value = {
             "incident_detected": False,
             "severity": "none",
             "incidents": [],
@@ -111,16 +97,10 @@ class TestAnalyzeEndpointSuccess:
         assert data["severity"] == "none"
         assert data["incidents"] == []
 
-    @patch("shared.video_analyzer.requests.get")
-    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze")
-    def test_analyze_endpoint_optional_fields(self, mock_analyze, mock_requests_get):
+    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze_url")
+    def test_analyze_endpoint_optional_fields(self, mock_analyze_url):
         """Test that camera_id and camera_name are optional."""
-        mock_response = MagicMock()
-        mock_response.content = b"fake video content"
-        mock_response.raise_for_status.return_value = None
-        mock_requests_get.return_value = mock_response
-
-        mock_analyze.return_value = {
+        mock_analyze_url.return_value = {
             "incident_detected": False,
             "severity": "none",
             "incidents": [],
@@ -209,52 +189,11 @@ class TestAnalyzeEndpointErrorHandling:
         assert response.status_code == 500
         assert "OPENROUTER_API_KEY" in response.json()["detail"]
 
-    @patch("shared.video_analyzer.requests.get")
-    def test_analyze_endpoint_download_failure(self, mock_requests_get):
-        """Test error handling when video download fails."""
-        import requests
-
-        mock_requests_get.side_effect = requests.RequestException("Connection failed")
-
-        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-api-key"}):
-            response = client.post(
-                "/analyze",
-                json={"video_url": "https://example.com/video.mp4"},
-            )
-
-        assert response.status_code == 400
-        data = response.json()
-        assert "Failed to download video" in data["detail"]
-
-    @patch("shared.video_analyzer.requests.get")
-    def test_analyze_endpoint_http_error(self, mock_requests_get):
-        """Test error handling when video URL returns HTTP error."""
-        import requests
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = requests.HTTPError("404 Not Found")
-        mock_requests_get.return_value = mock_response
-
-        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-api-key"}):
-            response = client.post(
-                "/analyze",
-                json={"video_url": "https://example.com/missing.mp4"},
-            )
-
-        assert response.status_code == 400
-        data = response.json()
-        assert "Failed to download video" in data["detail"]
-
-    @patch("shared.video_analyzer.requests.get")
-    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze")
-    def test_analyze_endpoint_analysis_failure(self, mock_analyze, mock_requests_get):
-        """Test error handling when video analysis fails."""
-        mock_response = MagicMock()
-        mock_response.content = b"fake video content"
-        mock_response.raise_for_status.return_value = None
-        mock_requests_get.return_value = mock_response
-
-        mock_analyze.side_effect = Exception("AI analysis failed")
+    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze_url")
+    def test_analyze_endpoint_openrouter_failure(self, mock_analyze_url):
+        """Test error handling when OpenRouter API call fails."""
+        from shared.video_analyzer import AnalysisError
+        mock_analyze_url.side_effect = AnalysisError("OpenRouter request failed: Connection refused")
 
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-api-key"}):
             response = client.post(
@@ -265,32 +204,14 @@ class TestAnalyzeEndpointErrorHandling:
         assert response.status_code == 500
         assert "Analysis failed" in response.json()["detail"]
 
-
-class TestAnalyzeEndpointTempFileCleanup:
-    """Test temporary file cleanup."""
-
-    @patch("shared.video_analyzer.requests.get")
-    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze")
-    @patch("os.path.exists")
-    @patch("os.unlink")
-    def test_temp_file_cleanup_on_success(
-        self, mock_unlink, mock_exists, mock_analyze, mock_requests_get
-    ):
-        """Test that temp file is cleaned up after successful analysis."""
-        mock_response = MagicMock()
-        mock_response.content = b"fake video content"
-        mock_response.raise_for_status.return_value = None
-        mock_requests_get.return_value = mock_response
-
-        mock_analyze.return_value = {
-            "incident_detected": False,
-            "severity": "none",
-            "incidents": [],
-            "scene_summary": "Test",
-            "reasoning": "Test",
-        }
-
-        mock_exists.return_value = True
+    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze_url")
+    def test_analyze_endpoint_null_content_error(self, mock_analyze_url):
+        """Test error handling when model returns null content (bad video URL)."""
+        from shared.video_analyzer import AnalysisError
+        mock_analyze_url.side_effect = AnalysisError(
+            "Model returned null content (finish_reason=None). "
+            "The video URL may be inaccessible or in an unsupported format."
+        )
 
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-api-key"}):
             response = client.post(
@@ -298,8 +219,22 @@ class TestAnalyzeEndpointTempFileCleanup:
                 json={"video_url": "https://example.com/video.mp4"},
             )
 
-        assert response.status_code == 200
-        mock_unlink.assert_called_once()
+        assert response.status_code == 500
+        assert "Analysis failed" in response.json()["detail"]
+
+    @patch("shared.video_analyzer.OpenRouterAnalyzer.analyze_url")
+    def test_analyze_endpoint_analysis_failure(self, mock_analyze_url):
+        """Test error handling when video analysis raises an unexpected error."""
+        mock_analyze_url.side_effect = Exception("AI analysis failed")
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-api-key"}):
+            response = client.post(
+                "/analyze",
+                json={"video_url": "https://example.com/video.mp4"},
+            )
+
+        assert response.status_code == 500
+        assert "Analysis failed" in response.json()["detail"]
 
 
 class TestCORSMiddleware:
@@ -427,7 +362,7 @@ class TestResponseModel:
             )
             assert req.source == source
 
-        # Invalid source - should raise validation error
+        # Invalid source
         with pytest.raises(ValueError):
             AnalyzeRequest(
                 video_url="https://example.com/video.mp4",

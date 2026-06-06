@@ -127,6 +127,37 @@ class AnalysisError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+def _parse_json_content(content: str) -> dict:
+    """Parse JSON from a model response, stripping markdown code fences if present.
+
+    Some models wrap their JSON output in ```json ... ``` even when
+    ``response_format: json_object`` is requested.  This strips the fences
+    before parsing so downstream code always gets a plain dict.
+
+    Raises
+    ------
+    AnalysisError
+        If the content cannot be parsed as JSON after stripping.
+    """
+    text = content.strip()
+    # Strip ```json ... ``` or ``` ... ``` fences
+    fence_match = _re.match(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", text, _re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AnalysisError(
+            f"Model returned non-JSON content: {content[:300]}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
 # Utility: download
 # ---------------------------------------------------------------------------
 
@@ -311,11 +342,11 @@ class GeminiAnalyzer(BaseAnalyzer):
 # ---------------------------------------------------------------------------
 
 class OpenRouterAnalyzer(BaseAnalyzer):
-    """Analyze video clips by base64-encoding the MP4 and sending it to
-    OpenRouter's chat completions endpoint.
+    """Analyze video clips via the OpenRouter chat completions endpoint.
 
-    Currently targets minimax/minimax-m3 which accepts ``video_url`` data URLs
-    in the message content.
+    Sends the video as a direct HTTP URL (``video_url`` content type).
+    minimax/minimax-m3 — and most other multimodal models — require a real
+    HTTP/HTTPS URL; base64 data URLs are silently rejected (content: null).
 
     Parameters
     ----------
@@ -324,7 +355,7 @@ class OpenRouterAnalyzer(BaseAnalyzer):
     model:
         OpenRouter model string. Defaults to "minimax/minimax-m3".
     timeout:
-        HTTP request timeout in seconds (default 120 - video payloads are large).
+        HTTP request timeout in seconds (default 120).
     """
 
     def __init__(
@@ -340,12 +371,30 @@ class OpenRouterAnalyzer(BaseAnalyzer):
         self._timeout = timeout
 
     def analyze(self, video_path: str) -> dict:
-        """Base64-encode the MP4 and call the OpenRouter completions API."""
-        self._validate_path(video_path)
+        """Analyze a local video file.
 
-        with open(video_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-        data_url = f"data:video/mp4;base64,{b64}"
+        Uploads the file to a temporary public URL via Supabase Storage if
+        available, otherwise raises AnalysisError with a clear message.
+        For direct URL analysis (preferred), use :meth:`analyze_url`.
+        """
+        self._validate_path(video_path)
+        raise AnalysisError(
+            "OpenRouterAnalyzer.analyze(path) is not supported — "
+            "minimax/minimax-m3 requires an HTTP URL, not a local file. "
+            "Call analyze_url(video_url) and pass the original signed URL instead."
+        )
+
+    def analyze_url(self, video_url: str) -> dict:
+        """Analyze a video by passing its HTTP URL directly to the model.
+
+        Parameters
+        ----------
+        video_url:
+            A publicly-accessible (or signed) HTTPS URL to an MP4 video.
+            Must be reachable by the OpenRouter/Minimax backend.
+        """
+        if not video_url.startswith(("http://", "https://")):
+            raise AnalysisError(f"video_url must be an HTTP/HTTPS URL, got: {video_url[:80]}")
 
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -359,7 +408,7 @@ class OpenRouterAnalyzer(BaseAnalyzer):
                     "role": "user",
                     "content": [
                         {"type": "text", "text": ANALYSIS_PROMPT},
-                        {"type": "video_url", "video_url": {"url": data_url}},
+                        {"type": "video_url", "video_url": {"url": video_url}},
                     ],
                 }
             ],
@@ -381,9 +430,20 @@ class OpenRouterAnalyzer(BaseAnalyzer):
 
         try:
             body = resp.json()
+            # Check for OpenRouter-level error response
+            if "error" in body:
+                error_msg = body["error"].get("message", "Unknown OpenRouter error")
+                raise AnalysisError(f"OpenRouter API error: {error_msg}")
             content = body["choices"][0]["message"]["content"]
-            return json.loads(content)
-        except (KeyError, IndexError, json.JSONDecodeError) as exc:
+            # Detect silent null — model couldn't process the video URL
+            if content is None:
+                finish = body["choices"][0].get("finish_reason")
+                raise AnalysisError(
+                    f"Model returned null content (finish_reason={finish!r}). "
+                    "The video URL may be inaccessible or in an unsupported format."
+                )
+            return _parse_json_content(content)
+        except (KeyError, IndexError) as exc:
             raise AnalysisError(
-                f"Unexpected OpenRouter response structure: {resp.text[:300]}"
+                f"Unexpected OpenRouter response structure: {resp.text[:500]}"
             ) from exc

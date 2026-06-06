@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from shared.tfl_client import TflClient
-from shared.video_analyzer import OpenRouterAnalyzer, download_video
+from shared.video_analyzer import OpenRouterAnalyzer, download_video  # noqa: F401  (download_video kept for watcher)
 from shared.config_loader import load_config
 from shared.incident_repository import IncidentRepository
 
@@ -43,6 +43,7 @@ class AnalyzeRequest(BaseModel):
     lon: Optional[float] = None
     source: str = "tfl"
     created_by: Optional[str] = None
+    second_opinion: bool = False
 
     @field_validator("video_url")
     @classmethod
@@ -87,18 +88,37 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
     """Analyze a video from URL, persist to DB, and return result."""
     cfg = load_config()
 
-    try:
-        api_key = cfg.require_openrouter_key()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    # Use different model for second opinion
+    if request.second_opinion:
+        from shared.video_analyzer import GeminiAnalyzer
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_key:
+            raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured for second opinion")
+        analyzer = GeminiAnalyzer(api_key=gemini_key)
+    else:
+        try:
+            api_key = cfg.require_openrouter_key()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        analyzer = OpenRouterAnalyzer(api_key=api_key, model=_MODEL)
 
-    analyzer = OpenRouterAnalyzer(api_key=api_key, model=_MODEL)
     repo = IncidentRepository.from_env()
 
-    video_path = None
     try:
-        video_path = download_video(request.video_url)
-        result = analyzer.analyze(video_path)
+        # OpenRouterAnalyzer passes the URL directly to the model.
+        # minimax/minimax-m3 silently returns null for base64 data URLs — it
+        # requires a real HTTP/HTTPS URL. GeminiAnalyzer still uses the Files
+        # API and needs a local download.
+        if request.second_opinion:
+            video_path = None
+            try:
+                video_path = download_video(request.video_url)
+                result = analyzer.analyze(video_path)
+            finally:
+                if video_path and os.path.exists(video_path):
+                    os.unlink(video_path)
+        else:
+            result = analyzer.analyze_url(request.video_url)
 
         # Persist to DB via IncidentRepository
         saved_incident = None
@@ -134,19 +154,17 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
         )
 
     except (ValueError, requests.HTTPError, requests.Timeout, requests.RequestException) as e:
-        raise HTTPException(status_code=400, detail=f"Failed to download video: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to process video: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-    finally:
-        if video_path and os.path.exists(video_path):
-            os.unlink(video_path)
 
 
 @app.post("/upload")
 async def upload_and_analyze_endpoint(request: AnalyzeRequest):
     """Analyze a manually-uploaded video URL (already in Supabase Storage)."""
     # Reuse same logic as /analyze but with source forced to "manual"
-    request.source = "manual"
+    # Pydantic v2 models are immutable - use model_copy to update
+    request = request.model_copy(update={"source": "manual"})
     return await analyze_video_endpoint(request)
 
 

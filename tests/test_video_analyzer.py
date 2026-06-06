@@ -242,8 +242,8 @@ class TestOpenRouterAnalyzer:
             OpenRouterAnalyzer(api_key="")
 
     @patch("shared.video_analyzer.requests.post")
-    def test_analyze_with_incident(self, mock_post, sample_incident_detected):
-        """Test successful analysis with incident via OpenRouter."""
+    def test_analyze_url_with_incident(self, mock_post, sample_incident_detected):
+        """Test successful analysis with incident via analyze_url."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "choices": [{"message": {"content": json.dumps(sample_incident_detected)}}]
@@ -251,11 +251,8 @@ class TestOpenRouterAnalyzer:
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
-        with patch("os.path.exists", return_value=True):
-            with patch("os.path.getsize", return_value=1000):
-                with patch("builtins.open", mock_open(read_data=b"fake video content")):
-                    analyzer = OpenRouterAnalyzer(api_key="test-api-key")
-                    result = analyzer.analyze("/fake/path/video.mp4")
+        analyzer = OpenRouterAnalyzer(api_key="test-api-key")
+        result = analyzer.analyze_url("https://example.com/video.mp4")
 
         assert result["incident_detected"] is True
         assert result["severity"] == "high"
@@ -264,10 +261,14 @@ class TestOpenRouterAnalyzer:
         call_args = mock_post.call_args
         assert call_args[1]["headers"]["Authorization"] == "Bearer test-api-key"
         assert call_args[1]["json"]["model"] == "minimax/minimax-m3"
+        # Verify the URL is passed directly (not base64-encoded)
+        content = call_args[1]["json"]["messages"][0]["content"]
+        video_entry = [item for item in content if item.get("type") == "video_url"][0]
+        assert video_entry["video_url"]["url"] == "https://example.com/video.mp4"
 
     @patch("shared.video_analyzer.requests.post")
-    def test_analyze_no_incident(self, mock_post, sample_incident_no_detection):
-        """Test successful analysis with no incident via OpenRouter."""
+    def test_analyze_url_no_incident(self, mock_post, sample_incident_no_detection):
+        """Test successful analysis with no incident via analyze_url."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "choices": [{"message": {"content": json.dumps(sample_incident_no_detection)}}]
@@ -275,17 +276,29 @@ class TestOpenRouterAnalyzer:
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
-        with patch("os.path.exists", return_value=True):
-            with patch("os.path.getsize", return_value=1000):
-                with patch("builtins.open", mock_open(read_data=b"fake video content")):
-                    analyzer = OpenRouterAnalyzer(api_key="test-api-key")
-                    result = analyzer.analyze("/fake/path/video.mp4")
+        analyzer = OpenRouterAnalyzer(api_key="test-api-key")
+        result = analyzer.analyze_url("https://example.com/video.mp4")
 
         assert result["incident_detected"] is False
         assert result["severity"] == "none"
 
     @patch("shared.video_analyzer.requests.post")
-    def test_analyze_invalid_response(self, mock_post):
+    def test_analyze_url_strips_markdown_fences(self, mock_post):
+        """Test that markdown code fences around JSON are stripped."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '```json\n{"incident_detected": false, "severity": "none", "incidents": [], "scene_summary": "test", "reasoning": "test"}\n```'}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        analyzer = OpenRouterAnalyzer(api_key="test-api-key")
+        result = analyzer.analyze_url("https://example.com/video.mp4")
+
+        assert result["incident_detected"] is False
+
+    @patch("shared.video_analyzer.requests.post")
+    def test_analyze_url_invalid_response(self, mock_post):
         """Test handling of malformed response from OpenRouter."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -294,62 +307,47 @@ class TestOpenRouterAnalyzer:
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
-        with patch("os.path.exists", return_value=True):
-            with patch("os.path.getsize", return_value=1000):
-                with patch("builtins.open", mock_open(read_data=b"fake video content")):
-                    analyzer = OpenRouterAnalyzer(api_key="test-api-key")
-                    with pytest.raises(AnalysisError):
-                        analyzer.analyze("/fake/path/video.mp4")
+        analyzer = OpenRouterAnalyzer(api_key="test-api-key")
+        with pytest.raises(AnalysisError):
+            analyzer.analyze_url("https://example.com/video.mp4")
 
     @patch("shared.video_analyzer.requests.post")
-    def test_analyze_api_error(self, mock_post):
+    def test_analyze_url_null_content(self, mock_post):
+        """Test that null content (silent rejection) raises a clear error."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"finish_reason": None, "message": {"content": None}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        analyzer = OpenRouterAnalyzer(api_key="test-api-key")
+        with pytest.raises(AnalysisError, match="null content"):
+            analyzer.analyze_url("https://example.com/video.mp4")
+
+    @patch("shared.video_analyzer.requests.post")
+    def test_analyze_url_api_error(self, mock_post):
         """Test API error handling during analysis."""
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
         mock_post.return_value = mock_response
 
-        with patch("os.path.exists", return_value=True):
-            with patch("os.path.getsize", return_value=1000):
-                with patch("builtins.open", mock_open(read_data=b"fake video content")):
-                    analyzer = OpenRouterAnalyzer(api_key="test-api-key")
-                    with pytest.raises(AnalysisError):
-                        analyzer.analyze("/fake/path/video.mp4")
-
-    @patch("shared.video_analyzer.requests.post")
-    def test_video_encoded_to_base64(self, mock_post):
-        """Test that video is properly base64 encoded."""
-        video_content = b"test video binary content"
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": '{"incident_detected": false}'}}]
-        }
-        mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
-
-        with patch("os.path.exists", return_value=True):
-            with patch("os.path.getsize", return_value=1000):
-                with patch("builtins.open", mock_open(read_data=video_content)):
-                    analyzer = OpenRouterAnalyzer(api_key="test-api-key")
-                    analyzer.analyze("/fake/path/video.mp4")
-
-        # Verify the payload contains base64 encoded video
-        call_args = mock_post.call_args
-        payload = call_args[1]["json"]
-        content = payload["messages"][0]["content"]
-
-        # Find the video_url entry
-        video_entry = [item for item in content if item.get("type") == "video_url"][0]
-        data_url = video_entry["video_url"]["url"]
-
-        expected_b64 = base64.b64encode(video_content).decode("utf-8")
-        assert data_url == f"data:video/mp4;base64,{expected_b64}"
-
-    def test_analyze_missing_file(self):
-        """Test error when video file does not exist."""
         analyzer = OpenRouterAnalyzer(api_key="test-api-key")
-        with pytest.raises(ValueError, match="Video file not found"):
-            analyzer.analyze("/nonexistent/path/video.mp4")
+        with pytest.raises(AnalysisError):
+            analyzer.analyze_url("https://example.com/video.mp4")
+
+    def test_analyze_url_requires_http(self):
+        """Test that analyze_url rejects non-HTTP URLs."""
+        analyzer = OpenRouterAnalyzer(api_key="test-api-key")
+        with pytest.raises(AnalysisError, match="HTTP/HTTPS URL"):
+            analyzer.analyze_url("/local/path/video.mp4")
+
+    def test_analyze_path_raises_clear_error(self):
+        """Test that calling analyze(path) raises a clear AnalysisError."""
+        analyzer = OpenRouterAnalyzer(api_key="test-api-key")
+        with patch("os.path.exists", return_value=True):
+            with pytest.raises(AnalysisError, match="analyze_url"):
+                analyzer.analyze("/some/path/video.mp4")
 
 
 class TestSeverityConstants:
