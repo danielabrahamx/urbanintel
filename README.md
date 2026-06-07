@@ -1,8 +1,51 @@
 # Urban Intelligence
 
-AI-powered road safety monitoring for London using TfL JamCam feeds.
+AI-powered near-miss detection for UK roads — using public CCTV and crowdsourced footage to prevent accidents before they happen.
 
-Polls traffic camera clips, runs them through vision models for incident detection, and surfaces results on a live dashboard.
+Every year on London's roads, **21,000 collisions** result in **3,500 serious injuries** and **108 deaths**. Behind each number is a preventable failure: a junction with poor sightlines, a parking scheme that forces cyclists into traffic, a sign placed too late. Transport for London and local councils invest heavily in post-collision analysis, but waiting for a death to trigger intervention is too late.
+
+Urban Intelligence detects *near misses* at scale. It analyses video from TfL's JamCam network and crowdsourced dashcam footage, identifying dangerous driving, road-design hazards, and close-proximity incidents — geo-located, severity-rated, and delivered as actionable reports for councils and National Highways.
+
+We started with academic foundations (UCL's CyclingNet) and modern vision models. Within 24 hours of launching, we crowdsourced 18 real near-miss videos. Outputs are 100% reproducible, algorithmically transparent, and designed to scale nationally.
+
+---
+
+## Quick start
+
+```bash
+# Backend
+python -m venv .venv && .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env   # add TFL_APP_KEY + OPENROUTER_API_KEY
+python api_server.py
+
+# Frontend
+cd frontend && npm install && npm run dev
+# → http://localhost:3000
+```
+
+---
+
+## How it works
+
+```
+TfL CCTV / crowdsourced video  →  vision model analysis  →  structured incident report
+                                                                  ↓
+                                                          Supabase (geo-located,
+                                                          severity-rated, timestamped)
+                                                                  ↓
+                                               Live dashboard ← reports for councils
+```
+
+Each detection includes: incident type, severity, confidence, timestamp in clip, scene summary, and reasoning. The analysis prompt adapts to the source — conservative for fixed overhead cameras, triage-biased for user-submitted footage.
+
+Two vision backends: **OpenRouter** (minimax/minimax-m3, works with direct video URLs) and **Gemini** (gemini-2.0-flash, used for second opinions).
+
+---
+
+## What we're building toward
+
+With sufficient near-miss footage, we'll train our own deep learning models — building on UCL's CyclingNet research — to create the first nationally scalable near-miss detection system purpose-built for UK road safety. The density of public CCTV plus early crowdsourcing traction (18 videos in 24 hours) shows this is achievable.
 
 ---
 
@@ -11,16 +54,15 @@ Polls traffic camera clips, runs them through vision models for incident detecti
 ```
                     +---------------+
                     |   TfL API     |
-                    | (JamCam feeds)|
                     +-------+-------+
                             |
                             v
 +-------------------+   +-------------------+   +------------------+
 |  Python Watcher   |   |  FastAPI Server   |   |  Next.js Frontend |
 |  (main.py)        |   |  (api_server.py)  |   |  (frontend/)      |
-|  - polls TfL      |   |  - /analyze       |   |  - Map view       |
-|  - analyzes clips |   |  - /upload        |   |  - Incident table |
-|  - writes DB      |   |  - /health        |   |  - Manual upload  |
+|  - polls cameras  |   |  - /analyze       |   |  - live map       |
+|  - runs AI models |   |  - /upload        |   |  - incident feed  |
+|  - persists to DB |   |  - /health        |   |  - manual upload  |
 +--------+----------+   +--------+----------+   +---------+---------+
          |                       |                       |
          v                       v                       v
@@ -29,301 +71,61 @@ Polls traffic camera clips, runs them through vision models for incident detecti
                                  v
                      +----------------------+
                      |  Supabase Postgres   |
-                     |  - incidents table   |
-                     |  - camera_status     |
-                     |  - Storage (uploads) |
                      +----------------------+
 ```
 
-### Upload flow (presigned URL — bypasses Vercel body limits)
-
-```
-Browser                          Vercel API routes         Supabase
-──────                          ──────────────────         ────────
-1. POST /api/upload-url ──────→ generates signed URL
-2. PUT video ────────────────────────────────────────────→ stored directly
-3. POST /api/upload ──────────→ signed download → Python analysis
-```
-
-The browser uploads video **directly to Supabase Storage** via a presigned URL. Vercel never touches the file bytes — only tiny JSON payloads (~200 bytes). This avoids the 4.5 MB Vercel body limit.
-
-### Backend
-
-| File | Role |
-|------|------|
-| `main.py` | CLI watcher - polls one camera on a loop, prints results, writes to DB |
-| `api_server.py` | FastAPI server - frontend calls this for analysis and uploads |
-| `shared/tfl_client.py` | TfL API wrapper with retry/back-off |
-| `shared/video_analyzer.py` | Gemini + OpenRouter analyzers with source-aware prompts |
-| `shared/incident_repository.py` | Supabase persistence layer |
-| `shared/config_loader.py` | Typed config from env vars + config.py |
-| `config.py` | Tunables (camera ID, poll interval, thresholds, prompt template) |
-| `repro_upload.py` | End-to-end upload test with the presigned URL pipeline (16 MB dummy) |
-
-### Frontend
-
-| File | Role |
-|------|------|
-| `frontend/app/(protected)/page.tsx` | Dashboard - map, live status button, manual upload, recent activity |
-| `frontend/app/(protected)/incidents/page.tsx` | Sortable/filterable incident table with CSV export |
-| `frontend/components/Map.tsx` | Leaflet map with severity pins and heatmap |
-| `frontend/app/api/analyze/route.ts` | Proxies video analysis to Python backend |
-| `frontend/app/api/upload-url/route.ts` | Generates presigned Supabase upload URL (server-side, service role) |
-| `frontend/app/api/upload/route.ts` | Post-upload handler — creates signed download URL, triggers analysis |
-| `frontend/app/api/incidents/route.ts` | Public read endpoint (service role) |
-| `frontend/app/api/incidents/[id]/route.ts` | Admin delete endpoint (auth required) |
-| `frontend/lib/supabase.ts` | Unified Supabase client factory (browser / server / middleware) |
+Uploads bypass Vercel's body limit via presigned URLs — videos go direct browser→Supabase, API routes only handle tiny JSON payloads.
 
 ---
 
-## Setup
-
-### 1. Clone and install Python dependencies
-
-```bash
-cd urbanintel
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-pip install -r requirements.txt
-```
-
-### 2. Install frontend dependencies
-
-```bash
-cd frontend
-npm install
-```
-
-### 3. Configure environment
-
-Copy `.env.example` to `.env` and fill in real values:
-
-```bash
-cp .env.example .env
-```
-
-Minimum required:
+## Project layout
 
 ```
-TFL_APP_KEY=your_tfl_key        # Free at https://api-portal.tfl.gov.uk
-OPENROUTER_API_KEY=your_key     # https://openrouter.ai/keys
+urbanintel/
+├── main.py                     # CLI watcher — polls one camera on loop
+├── api_server.py               # FastAPI — frontend calls this for analysis
+├── config.py                   # Tunables (camera IDs, thresholds, prompts)
+├── repro_upload.py             # E2E upload pipeline test (16 MB dummy)
+│
+├── shared/
+│   ├── tfl_client.py           # TfL API wrapper with retry/back-off
+│   ├── video_analyzer.py       # Gemini + OpenRouter, source-aware prompts
+│   ├── incident_repository.py  # Supabase persistence layer
+│   └── config_loader.py        # Typed env config
+│
+├── tests/                      # pytest suite — all external APIs mocked
+│
+└── frontend/                   # Next.js 14 (App Router) — Vercel root dir
+    ├── app/(protected)/        # Dashboard + incident table
+    ├── app/api/                # analyze, upload, upload-url, incidents
+    ├── components/             # Map (Leaflet), SeverityBadge, etc.
+    └── lib/                    # Supabase client, types
 ```
-
-Optional but recommended for the dashboard:
-
-```
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-```
-
-### 4. Set up Supabase
-
-1. Create a project at https://supabase.com
-2. Run the migrations in `frontend/supabase/migrations/`
-3. Create a storage bucket called `uploads` (private)
 
 ---
 
-## Running
+## Key decisions
 
-### Watcher (CLI)
+- **Public by default** — map, incident feed, and uploads work without auth. Only admin delete requires login.
+- **Near misses, not just crashes** — the leading indicator is what happens before the collision.
+- **Source-aware prompts** — different analysis framing for fixed CCTV vs user-submitted footage.
+- **Backend owns persistence** — the frontend never writes directly to Supabase.
+- **Presigned URL uploads** — video never touches Vercel, sidestepping the 4.5 MB body limit permanently.
+- **No-op when unconfigured** — works without Supabase; falls back gracefully.
 
-Polls a single camera indefinitely. Good for production monitoring.
+---
 
-```bash
-.venv\Scripts\activate
-python main.py
-```
+## Deployment
 
-Override camera: edit `TARGET_CAMERA_ID` in `config.py` or set env var.
+**Backend:** any cloud VM. Set env vars → `uvicorn api_server:app --host 0.0.0.0 --port 8000`
 
-### API Server
-
-Backend for the frontend. Must be running for the dashboard to work.
-
-```bash
-.venv\Scripts\activate
-python api_server.py
-# Or: uvicorn api_server:app --host 0.0.0.0 --port 8000
-```
-
-Endpoints:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Status check |
-| `/analyze` | POST | Analyze video URL (TfL or manual) |
-| `/upload` | POST | Same as analyze but forces source=manual |
-| `/cameras/{id}/video-url` | GET | Get current TfL video URL for a camera |
-
-### Frontend
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open http://localhost:3000
+**Frontend:** Vercel. **Set Root Directory to `frontend`** in Project Settings. Required env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_TFL_APP_KEY`, `BACKEND_API_URL`, `OPENROUTER_API_KEY`.
 
 ---
 
 ## Testing
 
 ```bash
-.venv\Scripts\activate
-python -m pytest tests/ -v
-```
-
-All external APIs are mocked. Tests run fast and isolated.
-
-| File | Coverage |
-|------|----------|
-| `test_tfl_client.py` | TfL API wrapper, retry logic, validation |
-| `test_video_analyzer.py` | Gemini + OpenRouter analyzers |
-| `test_incident_repository.py` | Supabase persistence |
-| `test_config.py` | Config loading and validation |
-| `test_api_server.py` | FastAPI endpoints, CORS, cleanup |
-
----
-
-## Video Analysis Pipeline
-
-The core loop is the same everywhere:
-
-```
-fetch camera URL  ->  download clip  ->  analyze with vision model  ->  persist result
-```
-
-Two vision backends:
-
-| Backend | Model | Input | Use case |
-|---------|-------|-------|----------|
-| OpenRouter | minimax/minimax-m3 | Direct video URL | Default - fast, cheap, no download needed |
-| Gemini | gemini-2.0-flash | Downloaded MP4 via Files API | Fallback, second opinion, eval.py |
-
-The prompt adapts to the source:
-- **TfL** (fixed overhead camera): conservative - only flag what is clearly observable
-- **Manual/Upload** (user-submitted): triage-biased - look hard, use low confidence when evidence is partial
-
----
-
-## Upload Architecture
-
-Manual video uploads use a **three-step presigned URL flow** to avoid Vercel's 4.5 MB serverless body limit:
-
-```
-1. Browser  →  POST /api/upload-url  {filename, contentType}
-             ←  {signedUrl, token, path}
-
-2. Browser  →  PUT signedUrl (Supabase Storage directly)
-             ←  200 OK
-
-3. Browser  →  POST /api/upload  {path, lat, lon, locationName}
-             ←  {success, incident_detected, severity, ...}
-```
-
-Step 2 uploads directly to Supabase — Vercel never touches the video bytes. Step 3 creates a signed download URL and forwards it to the Python backend for analysis. The whole flow works without authentication (public uploads).
-
-**Test it:** `python repro_upload.py` (defaults to 16 MB dummy file against localhost:3000).
-
----
-
-## Key Design Decisions
-
-1. **Public by default** - The map and incident feed are readable without auth. Only admin delete and realtime subscriptions require login. Manual upload is open — anyone can submit footage.
-
-2. **Service role for reads** - The frontend API routes use `createServiceClient()` (service role key) for DB reads. This avoids depending on open RLS policies and keeps the public experience reliable.
-
-3. **Backend handles persistence** - The FastAPI server writes to Supabase via `IncidentRepository`. The frontend never writes directly to the DB.
-
-4. **Source-aware prompts** - `build_analysis_prompt(source)` returns different framing for TfL vs manual footage. This is the single seam for adjusting model behavior per input type.
-
-5. **No-op when unconfigured** - `IncidentRepository.from_env()` returns `None` if Supabase creds are missing. The watcher and API server continue to work without persistence.
-
-6. **Presigned URL uploads** - Video files go direct browser→Supabase. Vercel serverless functions only handle tiny JSON payloads. This sidesteps Vercel's body size limit permanently and scales to any file size.
-
----
-
-## Deployment
-
-### Backend (Fly.io / Render / etc.)
-
-1. Set env vars from `.env.example`
-2. `python api_server.py` or `uvicorn api_server:app --host 0.0.0.0 --port 8000`
-3. Point `BACKEND_API_URL` or `NEXT_PUBLIC_API_URL` at it
-
-### Frontend (Vercel)
-
-**Important:** Set the Vercel project's **Root Directory** to `frontend`. The repo root has no Next.js app — the framework lives in the `frontend/` subdirectory.
-
-1. Go to Vercel Dashboard → Project Settings → General → Root Directory → set to `frontend`
-2. Set env vars in Vercel dashboard (see list below)
-3. Deploy: `cd frontend && vercel --prod --yes`
-
-**Environment variables:**
-- `NEXT_PUBLIC_SUPABASE_URL` — Supabase project URL
-- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — Supabase anon key
-- `SUPABASE_SERVICE_ROLE_KEY` — Supabase service role (server-side only)
-- `NEXT_PUBLIC_TFL_APP_KEY` — TfL API key
-- `BACKEND_API_URL` or `NEXT_PUBLIC_API_URL` — Python backend URL
-- `OPENROUTER_API_KEY` / `GEMINI_API_KEY` — model API keys
-- `NEXT_PUBLIC_ADMIN_EMAILS` — comma-separated admin emails
-
-The frontend build is safe without Supabase credentials — it falls back to placeholders and fails at request time, not build time.
-
-### GitHub auto-deploy
-
-Set the Vercel project's Root Directory to `frontend` (see above). Without this, auto-deploy on push fails with "Couldn't find any `pages` or `app` directory."
-
----
-
-## Directory Structure
-
-```
-urbanintel/
-├── main.py                     # CLI watcher
-├── api_server.py               # FastAPI backend
-├── config.py                   # Tunables and constants
-├── repro_upload.py             # Upload pipeline E2E test
-├── requirements.txt
-├── .env.example
-│
-├── shared/
-│   ├── tfl_client.py           # TfL API wrapper
-│   ├── video_analyzer.py       # Gemini + OpenRouter
-│   ├── incident_repository.py  # Supabase persistence
-│   └── config_loader.py        # Typed env config
-│
-├── tests/
-│   ├── conftest.py             # Fixtures
-│   ├── test_tfl_client.py
-│   ├── test_video_analyzer.py
-│   ├── test_incident_repository.py
-│   ├── test_config.py
-│   └── test_api_server.py
-│
-└── frontend/                   # Next.js 14 app (Vercel root directory)
-    ├── app/
-    │   ├── layout.tsx
-    │   ├── (protected)/
-    │   │   ├── page.tsx          # Dashboard
-    │   │   └── incidents/
-    │   │       └── page.tsx      # Incident table
-    │   └── api/
-    │       ├── analyze/route.ts
-    │       ├── upload/route.ts
-    │       ├── upload-url/route.ts
-    │       └── incidents/
-    │           ├── route.ts
-    │           └── [id]/route.ts
-    ├── components/
-    │   ├── Map.tsx
-    │   ├── SeverityBadge.tsx
-    │   └── ...
-    ├── lib/
-    │   ├── supabase.ts
-    │   ├── supabase-server.ts
-    │   └── types.ts
-    └── supabase/migrations/
+python -m pytest tests/ -v        # backend
+cd frontend && npm run build      # frontend (must compile)
 ```
