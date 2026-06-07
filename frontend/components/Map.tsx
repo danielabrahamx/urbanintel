@@ -24,9 +24,17 @@ async function openTflCamera(cameraId: string) {
   }
 }
 
+interface StaticCamera {
+  id: string
+  name: string
+  lat: number
+  lon: number
+}
+
 interface Props {
   incidents: Incident[]
   showHeatmap?: boolean
+  staticCameras?: StaticCamera[]
 }
 
 interface HeatPoint {
@@ -131,14 +139,19 @@ function getWorstSeverity(incidents: Incident[]): Severity {
   return worst
 }
 
-export default function MapView({ incidents, showHeatmap = true }: Props) {
+export default function MapView({ incidents, showHeatmap = true, staticCameras = [] }: Props) {
   const heatPoints = useMemo(() => generateHeatPoints(incidents), [incidents])
   const cameraPins = useMemo(() => buildCameraPins(incidents), [incidents])
 
   const center = useMemo(() => {
     const first = incidents.find((i) => i.lat != null && i.lon != null)
-    return first ? [first.lat!, first.lon!] : [51.505, -0.09]
-  }, [incidents])
+    if (first) return [first.lat!, first.lon!] as [number, number]
+    if (staticCameras.length > 0) return [staticCameras[0].lat, staticCameras[0].lon] as [number, number]
+    return [51.505, -0.09] as [number, number]
+  }, [incidents, staticCameras])
+
+  // Deduplicate: skip static cameras that already appear in incident-based pins
+  const incidentCameraIds = useMemo(() => new Set(cameraPins.map((p) => p.camera_id)), [cameraPins])
 
   return (
     <MapContainer
@@ -168,6 +181,39 @@ export default function MapView({ incidents, showHeatmap = true }: Props) {
               opacity: 0,
             }}
           />
+        ))}
+
+      {/* Static reference cameras — subtle markers for all known London TfL cameras */}
+      {staticCameras
+        .filter((cam) => !incidentCameraIds.has(cam.id))
+        .map((cam) => (
+          <CircleMarker
+            key={`static-${cam.id}`}
+            center={[cam.lat, cam.lon]}
+            radius={6}
+            pathOptions={{
+              color: '#00d4ff',
+              fillColor: '#00d4ff',
+              fillOpacity: 0.25,
+              weight: 1,
+              opacity: 0.5,
+            }}
+          >
+            <Popup>
+              <div style={{ minWidth: 200, fontFamily: 'Inter, sans-serif', background: '#1a1d27', color: '#f0f2f8', padding: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{cam.name}</div>
+                <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 6, fontFamily: 'monospace' }}>{cam.id}</div>
+                <div style={{ fontSize: 10, color: '#4b5563', fontFamily: 'monospace' }}>
+                  {cam.lat.toFixed(5)}, {cam.lon.toFixed(5)}
+                </div>
+                <div style={{ borderTop: '1px solid #2a2d3a', paddingTop: 8, marginTop: 8 }}>
+                  <span style={{ fontSize: 10, color: '#6b7280', fontStyle: 'italic' }}>
+                    No analysis data yet — use the Piccadilly Circus button to demo
+                  </span>
+                </div>
+              </div>
+            </Popup>
+          </CircleMarker>
         ))}
 
       {/* One pin per monitored camera - always visible */}

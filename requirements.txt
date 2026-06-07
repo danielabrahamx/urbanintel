@@ -4,3 +4,6 @@ python-dotenv>=1.0.0
 supabase
 fastapi>=0.100.0
 uvicorn>=0.23.0
+# Optional: MuBit AI memory SDK for hackathon points
+# pip install mubit-sdk
+# mubit-sdk>=0.1.0

@@ -275,7 +275,7 @@ _SOURCE_FRAMING: dict[str, str] = {
 _SOURCE_FRAMING["upload"] = _SOURCE_FRAMING["manual"]
 
 
-def build_analysis_prompt(source: str = "tfl") -> str:
+def build_analysis_prompt(source: str = "tfl", memory_context: str = "") -> str:
     """Return a source-aware analysis prompt.
 
     Parameters
@@ -284,6 +284,9 @@ def build_analysis_prompt(source: str = "tfl") -> str:
         ``"tfl"`` for fixed overhead camera monitoring (conservative), or
         ``"manual"``/``"upload"`` for user-submitted footage (triage-biased,
         cyclist-POV-optimised). Unknown values fall back to the TfL framing.
+    memory_context:
+        Optional historical context (e.g. past incidents at this camera) to
+        prepend to the prompt. Empty string = no extra context.
     """
     framing = _SOURCE_FRAMING.get(source, _SOURCE_FRAMING["tfl"])
     # Use cyclist-POV taxonomy for manual/upload sources, junction taxonomy for TfL.
@@ -291,12 +294,16 @@ def build_analysis_prompt(source: str = "tfl") -> str:
         taxonomy = _CYCLIST_EVENT_TAXONOMY
     else:
         taxonomy = _EVENT_TAXONOMY
-    return (
-        f"{framing}\n\n"
-        "You must not attempt to identify faces, individuals, or number plates.\n\n"
-        f"{taxonomy}\n\n"
-        f"{_JSON_SCHEMA}"
-    )
+    parts: list[str] = []
+    if memory_context:
+        parts.append(memory_context)
+    parts.extend([
+        framing,
+        "You must not attempt to identify faces, individuals, or number plates.",
+        taxonomy,
+        _JSON_SCHEMA,
+    ])
+    return "\n\n".join(parts)
 
 
 #: Backward-compatible default prompt (TfL framing) used by existing callers/tests.
@@ -473,13 +480,14 @@ class GeminiAnalyzer(BaseAnalyzer):
         genai.configure(api_key=api_key)
         self._genai = genai
 
-    def analyze(self, video_path: str, source: str = "tfl") -> dict:
+    def analyze(self, video_path: str, source: str = "tfl", memory_context: str = "") -> dict:
         """Upload to Gemini, analyse, delete, and return parsed JSON.
 
         The remote file is always deleted in a finally block so we don't leak
         storage quota even on errors.
 
         ``source`` selects the prompt framing ("tfl" vs "manual"/"upload").
+        ``memory_context`` is optionally prepended to the prompt (no-op when empty).
         """
         self._validate_path(video_path)
 
@@ -502,7 +510,7 @@ class GeminiAnalyzer(BaseAnalyzer):
             print("  Analysing...", end=" ", flush=True)
             model = self._genai.GenerativeModel(self._model)
             response = model.generate_content(
-                [uploaded_file, build_analysis_prompt(source)],
+                [uploaded_file, build_analysis_prompt(source, memory_context=memory_context)],
                 generation_config={"response_mime_type": "application/json"},
             )
             print("done")
@@ -574,7 +582,7 @@ class OpenRouterAnalyzer(BaseAnalyzer):
             "Call analyze_url(video_url) and pass the original signed URL instead."
         )
 
-    def analyze_url(self, video_url: str, source: str = "tfl") -> dict:
+    def analyze_url(self, video_url: str, source: str = "tfl", memory_context: str = "") -> dict:
         """Analyze a video by passing its HTTP URL directly to the model.
 
         Parameters
@@ -584,6 +592,8 @@ class OpenRouterAnalyzer(BaseAnalyzer):
             Must be reachable by the OpenRouter/Minimax backend.
         source:
             Selects the prompt framing ("tfl" vs "manual"/"upload").
+        memory_context:
+            Optional historical context to prepend to the prompt.
         """
         if not video_url.startswith(("http://", "https://")):
             raise AnalysisError(f"video_url must be an HTTP/HTTPS URL, got: {video_url[:80]}")
@@ -599,7 +609,7 @@ class OpenRouterAnalyzer(BaseAnalyzer):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": build_analysis_prompt(source)},
+                        {"type": "text", "text": build_analysis_prompt(source, memory_context=memory_context)},
                         {"type": "video_url", "video_url": {"url": video_url}},
                     ],
                 }

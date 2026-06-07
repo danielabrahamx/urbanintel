@@ -37,6 +37,26 @@ const DEMO_CAMERA = {
   lon: -0.1348,
 }
 
+// Static London TfL JamCam locations — always shown on map as reference markers.
+// Only the DEMO_CAMERA has the "Get Live Status" analyze button wired up.
+const LONDON_CAMERAS = [
+  DEMO_CAMERA,
+  { id: 'JamCams_00001.07350', name: 'Oxford Circus', lat: 51.5152, lon: -0.1419 },
+  { id: 'JamCams_00001.07370', name: 'Trafalgar Square', lat: 51.5080, lon: -0.1281 },
+  { id: 'JamCams_00001.07420', name: 'Hyde Park Corner', lat: 51.5028, lon: -0.1515 },
+  { id: 'JamCams_00001.07390', name: 'Tower Hill', lat: 51.5098, lon: -0.0764 },
+  { id: 'JamCams_00001.07400', name: 'Embankment', lat: 51.5074, lon: -0.1223 },
+  { id: 'JamCams_00001.07410', name: 'Waterloo Bridge', lat: 51.5081, lon: -0.1168 },
+  { id: 'JamCams_00001.07430', name: 'Marble Arch', lat: 51.5130, lon: -0.1590 },
+  { id: 'JamCams_00001.07360', name: 'Holborn', lat: 51.5175, lon: -0.1200 },
+  { id: 'JamCams_00001.07440', name: 'Victoria', lat: 51.4956, lon: -0.1442 },
+  { id: 'JamCams_00001.07380', name: 'Aldgate', lat: 51.5140, lon: -0.0754 },
+  { id: 'JamCams_00001.07460', name: 'King\'s Cross', lat: 51.5309, lon: -0.1239 },
+  { id: 'JamCams_00001.07470', name: 'London Bridge', lat: 51.5055, lon: -0.0877 },
+  { id: 'JamCams_00001.07480', name: 'Southwark', lat: 51.5038, lon: -0.0986 },
+  { id: 'JamCams_00001.07490', name: 'Westminster', lat: 51.5008, lon: -0.1246 },
+]
+
 function getAdminEmails(): string[] {
   return (process.env.NEXT_PUBLIC_ADMIN_EMAILS || process.env.NEXT_PUBLIC_ADMIN_EMAIL || '')
     .split(',')
@@ -551,7 +571,7 @@ export default function DashboardPage() {
 
       {/* Map */}
       <div style={{ flex: 1, position: 'relative', zIndex: 0 }}>
-        <MapView incidents={mapIncidents} showHeatmap={true} />
+        <MapView incidents={mapIncidents} showHeatmap={true} staticCameras={LONDON_CAMERAS} />
 
         {/* Map Legend */}
         <div

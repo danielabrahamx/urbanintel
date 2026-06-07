@@ -20,6 +20,7 @@ from shared.tfl_client import TflClient
 from shared.video_analyzer import OpenRouterAnalyzer, download_video  # noqa: F401  (download_video kept for watcher)
 from shared.config_loader import load_config
 from shared.incident_repository import IncidentRepository
+from shared.mubit_client import MubitMemory
 
 app = FastAPI(title="Urban Intelligence API")
 
@@ -49,6 +50,17 @@ app.add_middleware(
 
 #: OpenRouter model reported in the health check.
 _MODEL = "minimax/minimax-m3"
+
+#: Lazy MuBit memory client. Completely optional — no env vars = no-op.
+_mubit: MubitMemory | None = None
+
+
+def _get_mubit() -> MubitMemory:
+    """Return the shared MuBit memory instance (lazy init)."""
+    global _mubit
+    if _mubit is None:
+        _mubit = MubitMemory(project_id=os.environ.get("MUBIT_PROJECT_ID"))
+    return _mubit
 
 
 class AnalyzeRequest(BaseModel):
@@ -120,6 +132,14 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
 
     repo = IncidentRepository.from_env()
 
+    # MuBit memory recall (optional, fire-and-forget)
+    memory_context = ""
+    if request.camera_id:
+        try:
+            memory_context = _get_mubit().recall_camera_context(request.camera_id)
+        except Exception:
+            pass
+
     try:
         # OpenRouterAnalyzer passes the URL directly to the model.
         # minimax/minimax-m3 silently returns null for base64 data URLs — it
@@ -129,12 +149,21 @@ async def analyze_video_endpoint(request: AnalyzeRequest):
             video_path = None
             try:
                 video_path = download_video(request.video_url)
-                result = analyzer.analyze(video_path, source=request.source)
+                result = analyzer.analyze(video_path, source=request.source, memory_context=memory_context)
             finally:
                 if video_path and os.path.exists(video_path):
                     os.unlink(video_path)
         else:
-            result = analyzer.analyze_url(request.video_url, source=request.source)
+            result = analyzer.analyze_url(request.video_url, source=request.source, memory_context=memory_context)
+
+        # MuBit memory remember (optional, fire-and-forget)
+        if request.camera_id:
+            try:
+                _get_mubit().remember_incident(
+                    request.camera_id, result, source=request.source
+                )
+            except Exception:
+                pass
 
         # Persist to DB via IncidentRepository
         saved_incident = None
