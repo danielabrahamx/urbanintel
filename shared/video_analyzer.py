@@ -77,9 +77,7 @@ SEVERITY_EMOJI: dict[str, str] = {
     "critical": "[!!!]",
 }
 
-#: Shared definition of the dangerous events the model must spot, plus
-#: detailed visual cues so the model knows *what each one looks like* rather
-#: than just its name.
+#: Event taxonomy for fixed-overhead TfL junction cameras (unchanged).
 _EVENT_TAXONOMY: str = """Dangerous events to flag (use the exact type string):
 - NEAR_MISS: two road users (vehicle/vehicle, vehicle/pedestrian, vehicle/cyclist)
   come close enough that a collision was narrowly avoided. Visual cues: hard braking,
@@ -97,6 +95,110 @@ _EVENT_TAXONOMY: str = """Dangerous events to flag (use the exact type string):
 - AGGRESSIVE_DRIVING: sudden swerving, weaving, or obvious tailgating.
 - CYCLIST_RISK: cyclist squeezed by, undertaking, or in the blind spot of a larger
   vehicle (bus, lorry, van) at close range."""
+
+#: Cyclist-POV event taxonomy — used for user-uploaded helmet/handlebar-cam footage.
+#: Every event is described from the camera holder's first-person perspective.
+#: NEAR_MISS is the central event type; spatial proximity is the primary signal.
+_CYCLIST_EVENT_TAXONOMY: str = """Dangerous events to flag from the CYCLIST'S POINT OF VIEW (use the exact type string).
+The camera IS the cyclist. Judge every event from what the camera holder experiences.
+
+HOW TO JUDGE PROXIMITY FROM POV FOOTAGE (read this before classifying):
+- A vehicle that occupies >40% of the frame width as it passes is within ~1 metre.
+- If you can see bodywork detail on a passing vehicle (door handles, panel gaps,
+  badges, wing mirror shape, the driver's face or arm) the clearance is under 1m.
+- The critical question: is there visible road surface or daylight between the
+  cyclist and the passing vehicle? If NO — the vehicle fills the frame edge-to-edge
+  with zero visible gap — that is a near-miss. Collision was avoided only because
+  the vehicle happened to be travelling straight and the cyclist held their line.
+- Camera shake is a SECONDARY cue — its absence does NOT mean the pass was safe.
+  Many near-misses show no camera movement because the cyclist held steady.
+- A SAFE pass: you can see clear road surface between cyclist and vehicle, the
+  vehicle occupies less than ~30% of the frame width, and there is obvious space.
+
+- NEAR_MISS (THE PRIMARY EVENT — scrutinise every overtake for this):
+  A collision was narrowly avoided because the margin for error was dangerously
+  small. A near-miss means: if the cyclist had wobbled slightly, or the vehicle
+  had drifted slightly, contact would have occurred. The defining evidence is
+  PROXIMITY — how much space existed between the cyclist and the vehicle.
+  From POV, a near-miss looks like ONE OR MORE of the following:
+  * [OVERTAKE] A vehicle passes with no visible gap between it and the cyclist.
+    The vehicle bodywork fills most of the frame. You cannot see road surface
+    between the cyclist and the vehicle. This IS a near-miss — the proximity
+    itself is the danger, regardless of whether anyone swerved.
+  * [OVERTAKE] A vehicle passes close enough that you can see fine detail on
+    its side (door handles, badges, the driver's face through the window, wing
+    mirror at head height). This means the vehicle is within arm's reach.
+  * [OVERTAKE] A vehicle overtakes and immediately cuts in front of the cyclist
+    before fully clearing them — the vehicle's rear is still close ahead.
+  * [PULL-OUT] A vehicle pulls out from a side road, driveway, or parking space
+    into the cyclist's path with barely enough room, forcing the cyclist to brake
+    or take evasive action.
+  * [HOOK] A vehicle ahead turns left across the cyclist's path (left hook),
+    or an oncoming vehicle turns right across the cyclist's path (right hook),
+    with the cyclist having to brake or swerve to avoid collision.
+  * [DOORING] A vehicle door swings open directly in the cyclist's path.
+  * [PEDESTRIAN] A pedestrian steps into the road immediately ahead of the
+    cyclist, forcing emergency braking or a swerve.
+  For each near-miss, your description MUST state what the proximity was and
+  why it was dangerous. Example: "Vehicle passes within ~0.5m — no visible gap,
+  door handles and badge legible, wing mirror at head height."
+
+  SEVERITY FOR OVERTAKE NEAR-MISSES:
+  - CRITICAL: vehicle fills the frame completely (no gap at all), you can read
+    the badge or see the driver's facial features, wing mirror passes within
+    inches of the camera.
+  - HIGH: vehicle occupies most of the frame (>50% width), no road surface
+    visible between cyclist and vehicle, bodywork detail clearly legible.
+  - MEDIUM: the pass is tight — vehicle occupies 30-50% of frame width, some
+    visible detail on the vehicle side, gap is clearly less than a car-door width.
+  - LOW: vehicle is closer than comfortable but there is visible space and the
+    pass would not be dangerous if the cyclist held their line.
+
+- CYCLIST_RISK:
+  The cyclist is put in a vulnerable position by another vehicle's behaviour.
+  From POV:
+  * Cyclist squeezed against the kerb or parked cars by a vehicle alongside.
+  * A bus, lorry, or van passes and pulls in before fully clearing the cyclist.
+  * Cyclist in a large vehicle's blind spot with no acknowledgment from driver.
+  * A vehicle encroaches into a cycle lane, forcing the cyclist into traffic.
+  * Filtering through queuing traffic — a vehicle closes a gap unpredictably.
+
+- DANGEROUS_OVERTAKE:
+  A vehicle overtakes in a way that creates danger beyond proximity alone.
+  From POV:
+  * Overtaking into visible oncoming traffic.
+  * Overtaking approaching a junction, traffic island, or crossing with no room
+    to complete the pass.
+  * Overtaking then immediately braking or turning left across the cyclist.
+  * Overtaking at speed with a trailer or wide load that cuts in early.
+
+- RED_LIGHT_VIOLATION:
+  A vehicle runs a red light while the cyclist has right of way. From POV:
+  * Cyclist has green, a vehicle from the crossing direction goes through on red.
+  * A vehicle behind or alongside the cyclist runs a red light.
+
+- WRONG_WAY:
+  A vehicle or other road user travels against traffic flow toward the camera.
+
+- PEDESTRIAN_IN_ROAD:
+  A pedestrian is in the live carriageway in the cyclist's path.
+  From POV: person steps off the pavement into the road ahead, or walks in the
+  road with their back to traffic.
+
+- VEHICLE_STOPPED_DANGEROUSLY:
+  A stationary vehicle forces the cyclist into danger. From POV:
+  * A parked car or van blocks a cycle lane, forcing the cyclist into live traffic.
+  * A vehicle stopped in a live lane or junction box.
+  * A delivery vehicle, taxi, or bus pulled up in the cyclist's path without warning.
+
+- AGGRESSIVE_DRIVING:
+  Deliberately intimidating or hostile behaviour toward the cyclist. From POV:
+  * A "punishment pass" — an extremely close overtake paired with horn use,
+    engine revving, or the vehicle immediately pulling in front.
+  * A vehicle tailgates the cyclist from behind (audible engine noise close
+    behind; fills rear camera if present).
+  * Driver gestures, shouts, or behaves threateningly.
+  * Vehicle repeatedly brake-checks or slows to confront the cyclist."""
 
 _JSON_SCHEMA: str = """Respond ONLY with this JSON - no preamble, no markdown, no explanation outside it:
 {
@@ -130,15 +232,43 @@ _SOURCE_FRAMING: dict[str, str] = {
         "Only flag what you can clearly observe; if genuinely in doubt, do not flag."
     ),
     "manual": (
-        "You are a road-safety incident reviewer watching USER-SUBMITTED footage that a\n"
-        "member of the public uploaded to report a dangerous moment. It may be dashcam,\n"
-        "phone, helmet-cam, or CCTV from ANY angle and distance - not a fixed junction\n"
-        "camera. Assume the uploader saw something concerning, so look hard for it.\n"
-        "Bias toward triage: flag a plausible NEAR_MISS or other event when you see\n"
-        "evasive braking, swerving, abrupt stopping, a road user entering another's path,\n"
-        "or dangerous proximity, even if the angle or quality is imperfect. Use\n"
-        '"confidence": "low" when evidence is partial, but do NOT dismiss a likely\n'
-        "near-miss just because the footage is shaky, brief, or low quality."
+        "You are a road-safety incident reviewer watching footage from a CYCLIST'S\n"
+        "POINT OF VIEW — a helmet camera or handlebar camera worn by someone cycling\n"
+        "in traffic. The camera MOVES WITH THE CYCLIST. It is NOT a fixed junction\n"
+        "camera. The camera holder IS the vulnerable road user.\n"
+        "\n"
+        "YOUR TASK: identify near-misses — moments where a collision was narrowly\n"
+        "avoided because the margin for error was dangerously small. The PRIMARY\n"
+        "evidence of a near-miss is PROXIMITY: how much space existed between the\n"
+        "cyclist and the vehicle? If the answer is 'almost none', that IS a near-miss.\n"
+        "\n"
+        "HOW TO JUDGE PROXIMITY FROM POV FOOTAGE:\n"
+        "- A vehicle occupying >40% of the frame width is within ~1 metre.\n"
+        "- Visible bodywork detail (door handles, badges, panel gaps, wing mirror\n"
+        "  shape, driver's face) means clearance is under 1 metre — dangerous.\n"
+        "- The critical test: is there visible ROAD SURFACE or DAYLIGHT between the\n"
+        "  cyclist and the passing vehicle? If NO — the vehicle fills the frame with\n"
+        "  zero gap — collision was avoided only by both parties holding a straight\n"
+        "  line. This IS a near-miss. Flag it.\n"
+        "- Camera shake MAY be present (from wind buffeting or evasive movement) but\n"
+        "  its ABSENCE does NOT indicate a safe pass. Many dangerous passes show no\n"
+        "  camera movement at all. Judge by the SPACE, not by camera stability.\n"
+        "- A safe pass: clear road surface visible between cyclist and vehicle,\n"
+        "  vehicle occupies <30% of frame width, obvious gap.\n"
+        "\n"
+        "TRIAGE POSTURE:\n"
+        "Assume the uploader submitted this because they experienced something\n"
+        "dangerous. Scrutinise EVERY overtake for proximity. When you see a vehicle\n"
+        "pass with little or no visible gap, flag it as NEAR_MISS and explain exactly\n"
+        "what the proximity was (e.g. 'no road surface visible between cyclist and\n"
+        "vehicle, door handles legible, vehicle fills >50% of frame width').\n"
+        "Use confidence: low when evidence is partial, but do NOT dismiss a likely\n"
+        "near-miss just because the footage is shaky, brief, or the angle is unusual.\n"
+        "\n"
+        "Do NOT describe the scene as 'normal traffic flow at a junction' — you are\n"
+        "watching from within the traffic, at road level, from a vulnerable position.\n"
+        "A vehicle passing inches from a cyclist IS a near-miss, even if traffic is\n"
+        "otherwise flowing normally."
     ),
 }
 # 'upload' is an alias for 'manual'.
@@ -152,14 +282,19 @@ def build_analysis_prompt(source: str = "tfl") -> str:
     ----------
     source:
         ``"tfl"`` for fixed overhead camera monitoring (conservative), or
-        ``"manual"``/``"upload"`` for user-submitted footage (triage-biased).
-        Unknown values fall back to the TfL framing.
+        ``"manual"``/``"upload"`` for user-submitted footage (triage-biased,
+        cyclist-POV-optimised). Unknown values fall back to the TfL framing.
     """
     framing = _SOURCE_FRAMING.get(source, _SOURCE_FRAMING["tfl"])
+    # Use cyclist-POV taxonomy for manual/upload sources, junction taxonomy for TfL.
+    if source in ("manual", "upload", "cyclist"):
+        taxonomy = _CYCLIST_EVENT_TAXONOMY
+    else:
+        taxonomy = _EVENT_TAXONOMY
     return (
         f"{framing}\n\n"
         "You must not attempt to identify faces, individuals, or number plates.\n\n"
-        f"{_EVENT_TAXONOMY}\n\n"
+        f"{taxonomy}\n\n"
         f"{_JSON_SCHEMA}"
     )
 
