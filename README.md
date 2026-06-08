@@ -123,6 +123,8 @@ urbanintel/
 
 **Frontend:** Vercel. **Set Root Directory to `frontend`** in Project Settings. Required env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_TFL_APP_KEY`, `BACKEND_API_URL`, `OPENROUTER_API_KEY`.
 
+Set `ANALYZE_ENABLED=false` to disable analysis globally (no credits burned while idle).
+
 ---
 
 ## Testing

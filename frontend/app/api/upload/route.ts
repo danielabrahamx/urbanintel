@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase-server'
 import { createServiceClient } from '@/lib/supabase'
+import { checkRateLimit } from '@/lib/rate-limit'
 
 export const maxDuration = 60
 export const dynamic = 'force-dynamic'
@@ -15,6 +16,18 @@ export const dynamic = 'force-dynamic'
  */
 export async function POST(request: NextRequest) {
   try {
+    const rateLimit = checkRateLimit()
+    if (!rateLimit.allowed) {
+      if (rateLimit.reason === 'disabled') {
+        return NextResponse.json({ error: 'Analysis is currently disabled.' }, { status: 503 })
+      }
+      const minutes = Math.ceil(rateLimit.retryAfterMs / 60_000)
+      return NextResponse.json(
+        { error: `Rate limited. Try again in ~${minutes} minute${minutes > 1 ? 's' : ''}.` },
+        { status: 429 },
+      )
+    }
+
     const authClient = await createServerSupabaseClient()
     const supabase = createServiceClient()
     const { data: { user } } = await authClient.auth.getUser()

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase-server'
+import { checkRateLimit } from '@/lib/rate-limit'
 
 /**
  * POST /api/analyze
@@ -10,6 +11,18 @@ import { createServerSupabaseClient } from '@/lib/supabase-server'
  */
 export async function POST(request: NextRequest) {
   try {
+    const rateLimit = checkRateLimit()
+    if (!rateLimit.allowed) {
+      if (rateLimit.reason === 'disabled') {
+        return NextResponse.json({ error: 'Analysis is currently disabled.' }, { status: 503 })
+      }
+      const minutes = Math.ceil(rateLimit.retryAfterMs / 60_000)
+      return NextResponse.json(
+        { error: `Rate limited. Try again in ~${minutes} minute${minutes > 1 ? 's' : ''}.` },
+        { status: 429 },
+      )
+    }
+
     const supabase = await createServerSupabaseClient()
     const { videoUrl, cameraId, cameraName, lat, lon, source = 'tfl', secondOpinion = false } = await request.json()
 
